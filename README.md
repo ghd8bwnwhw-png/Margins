@@ -55,20 +55,37 @@ You'll use **GitHub Pages**, a free hosting service. Think of it as a shelf on t
 | **Export to Apple Notes** | Highlights list → **Export to Notes** → choose **Notes** → pick a folder → **Save** |
 | Contents / text size | **≡** and **Aa** icons (EPUB) |
 | Zoom a PDF | **–** / **+** at the bottom |
+| Sync with other devices | Library → **Sync** icon → step 1, step 2 (see below) |
 | Back up highlights | Library → **⋯** → *Back up highlights & notes* → *Save to Files* (iCloud Drive) |
 
 ---
 
+## Syncing highlights between iPad, iPhone and Mac
+
+Margins keeps your devices in step through **one file, `margins-sync.json`, in iCloud Drive**. It syncs highlights, notes, colour changes, deletions and where you stopped reading. Books themselves don't sync — import each book on every device.
+
+**Each time you sync, on each device, one after the other:**
+
+1. Library → tap the **Sync** icon (two circular arrows, top right).
+2. **Step 1 – Get changes:** tap *Choose sync file* → iCloud Drive → `margins-sync.json`. *(Skip on the very first sync.)*
+3. **Step 2 – Save changes:** tap *Save sync file* → **Save to Files** → iCloud Drive → your *Margins* folder → **Save**. If asked, choose **Replace**.
+
+Example: after reading on the iPad, sync the iPad; then on the iPhone do step 1 and step 2.
+
+- If a highlight was changed on both devices, the most recent edit wins.
+- Highlights for a book that's only on the other device wait in the file and appear as soon as you import that book.
+- Nothing is lost if you forget step 1 once: each device keeps everything it has seen.
+
 ## Good to know
 
-- **Each device has its own library.** Import books on each device. To bring highlights over, make a backup on one device and *Restore from a backup* on the other (import the same books first).
+- **Each device has its own library** of books; use Sync (above) to share highlights and notes.
 - **Back up now and then.** Your books and highlights live only on the device. If you delete the Home Screen icon, its data is deleted too.
 - **DRM-free only.** Books bought in Apple Books, Kindle or Kobo are copy-protected and can't be opened by any other app. DRM-free EPUBs and any normal PDF work.
 - **Scanned PDFs** (photos of pages with no real text) can't be highlighted.
 
 ## Updating the app later
 
-If you receive a newer version: on GitHub open the repository → **Add file ▸ Upload files** → drag the new files in → **Commit changes**. Your devices pick up the update the next time Margins opens with internet. Your books and highlights are kept.
+If you receive a newer version: on GitHub open the repository → **Add file ▸ Upload files** → drag *everything inside* the new `margins-web` folder in (same files are simply replaced) → **Commit changes**. Wait two minutes. Then on each device, open Margins once with internet, close it fully (swipe it away in the app switcher) and open it again. Your books and highlights are kept.
 
 ---
 

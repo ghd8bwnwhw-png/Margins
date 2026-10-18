@@ -55,7 +55,13 @@ export class EPUBReader {
     this.endNote = h('div', { class: 'end-of-book' }, 'The end');
     this.scroller = h('div', { class: 'epub-scroller' }, this.frame, h('div', { class: 'chapter-end' }, this.nextButton, this.endNote));
     container.append(this.scroller);
+    // Once the reader touches the page, stop re-applying the saved position
+    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+      this.scroller.addEventListener(type, () => { this.autoPosition = null; }, { passive: true });
+    }
     this.scroller.addEventListener('scroll', () => {
+      // A scroll the app didn't make itself means the reader has moved on
+      if (this.autoPosition && Math.abs(this.scroller.scrollTop - this.autoTop) > 4) this.autoPosition = null;
       clearTimeout(this.scrollTimer);
       this.scrollTimer = setTimeout(() => this.emitPosition(), 250);
     }, { passive: true });
@@ -97,21 +103,23 @@ export class EPUBReader {
 
     this.fit();
     const position = () => {
-      if (focusId && this.scrollToMark(focusId)) return;
-      if (fragment && this.scrollToId(fragment)) return;
-      const max = this.scroller.scrollHeight - this.scroller.clientHeight;
-      this.scroller.scrollTop = Math.max(0, fraction) * max;
+      if (!(focusId && this.scrollToMark(focusId)) && !(fragment && this.scrollToId(fragment))) {
+        const max = this.scroller.scrollHeight - this.scroller.clientHeight;
+        this.scroller.scrollTop = Math.max(0, fraction) * max;
+      }
+      this.autoTop = this.scroller.scrollTop;
     };
     position();
-    this.lastAuto = this.scroller.scrollTop;
-    // Pictures may still be loading and change the height — position once more.
+    // Pictures may still be loading and change the height: keep the saved
+    // position until the page settles (or the reader starts scrolling).
+    this.autoPosition = position;
     setTimeout(() => {
-      if (token === this.loadToken && Math.abs(this.scroller.scrollTop - this.lastAuto) < 2) {
+      if (token === this.loadToken && this.autoPosition === position) {
         this.fit();
-        position();
+        this.autoPosition = null;
       }
-      this.emitPosition();
-    }, 400);
+    }, 3000);
+    setTimeout(() => { if (token === this.loadToken) this.emitPosition(); }, 500);
   }
 
   prepare(doc) {
@@ -126,6 +134,9 @@ export class EPUBReader {
     doc.addEventListener('selectionchange', () => this.onSelectionChange());
     doc.addEventListener('click', (e) => this.onClick(e));
     doc.addEventListener('keydown', (e) => this.cb.onKey?.(e));
+    for (const type of ['wheel', 'touchstart', 'pointerdown']) {
+      doc.addEventListener(type, () => { this.autoPosition = null; }, { passive: true });
+    }
 
     this.resizeObserver?.disconnect();
     const RO = this.frame.contentWindow?.ResizeObserver || window.ResizeObserver;
@@ -138,6 +149,7 @@ export class EPUBReader {
     if (!this.doc?.body) return;
     const height = Math.ceil(this.doc.body.getBoundingClientRect().bottom);
     this.frame.style.height = `${Math.max(height, 120)}px`;
+    this.autoPosition?.();
   }
 
   applyTypography() {

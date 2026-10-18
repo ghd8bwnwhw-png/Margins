@@ -3,7 +3,7 @@
 // "files" (the actual EPUB/PDF data) and "highlights" (text, notes, colours).
 
 const DB_NAME = 'margins';
-const DB_VERSION = 1;
+const DB_VERSION = 2;   // v2 adds "deleted" (for sync) and "meta"
 let dbPromise = null;
 
 function openDB() {
@@ -18,6 +18,8 @@ function openDB() {
           const store = db.createObjectStore('highlights', { keyPath: 'id' });
           store.createIndex('bookId', 'bookId');
         }
+        if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

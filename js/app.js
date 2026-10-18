@@ -6,13 +6,15 @@ import { h, icon, iconButton, openSheet, toast, confirmDialog, alertSheet, actio
 import { openEPUB } from './epub.js';
 import { EPUBReader } from './epubreader.js';
 import { exportText, shareText, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
+import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 const COLORS = ['yellow', 'green', 'blue', 'pink'];
 
 const app = document.getElementById('app');
 const fileInput = document.getElementById('file-input');
 const backupInput = document.getElementById('backup-input');
+const syncInput = document.getElementById('sync-input');
 
 const prefs = {
   get(key, fallback) {
@@ -50,6 +52,7 @@ function renderLibrary() {
       h('h1', { class: 'brand' }, 'Margins'),
       h('div', { class: 'topbar-actions' },
         iconButton('more', 'Settings & backup', showSettings),
+        iconButton('sync', 'Sync with your other devices', showSync),
         h('button', { class: 'btn-primary', onclick: pickFiles }, icon('plus'), h('span', {}, 'Import')))),
     installBanner(),
     books.length
@@ -164,6 +167,10 @@ async function importFiles(files) {
   }
   busy.close();
   navigator.storage?.persist?.().catch(() => {});
+  if (added) {
+    const waiting = await applyWaiting().catch(() => null);
+    if (waiting?.added) toast(`${waiting.added} synced highlight${waiting.added === 1 ? '' : 's'} added from your other devices`);
+  }
   await refreshLibrary();
   if (failures.length) alertSheet(added ? 'Some files weren’t imported' : 'Couldn’t import', failures.join('\n\n'));
   else toast(`Added ${added} book${added === 1 ? '' : 's'}`);
@@ -355,6 +362,7 @@ class ReaderSession {
     if (label) this.label.textContent = label;
     this.book.position = pos;
     this.book.progress = progress;
+    this.book.positionUpdatedAt = Date.now();
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => db.put('books', this.book), 600);
   }
@@ -444,6 +452,8 @@ class ReaderSession {
 async function deleteHighlight(hl, owner, list) {
   hl.deleted = true;
   await db.del('highlights', hl.id);
+  const book = owner?.book || library.find((b) => b.id === hl.bookId) || await db.get('books', hl.bookId);
+  await recordDeletion(hl, book).catch(() => {});
   const arrays = [owner?.highlights, list].filter(Boolean);
   for (const arr of arrays) {
     const i = arr.indexOf(hl);
@@ -458,10 +468,15 @@ function editHighlight(hl, owner, { list, onChange } = {}) {
   note.value = hl.note || '';
 
   let timer;
+  let savedNote = hl.note || '';
+  let savedColor = hl.color;
   const save = () => {
     clearTimeout(timer);
     if (hl.deleted) return;
     hl.note = note.value;
+    if (hl.note === savedNote && hl.color === savedColor) return; // nothing changed
+    savedNote = hl.note;
+    savedColor = hl.color;
     hl.updatedAt = Date.now();
     db.put('highlights', hl);
     onChange?.();
@@ -567,6 +582,95 @@ function showHighlights(book, list, owner) {
 // Settings, backup & restore
 // ======================================================================
 
+// ======================================================================
+// Sync between devices (one file in iCloud Drive)
+// ======================================================================
+
+let syncSheetStatus = null;
+
+function describeStats(s) {
+  const parts = [];
+  if (s.added) parts.push(`${s.added} new`);
+  if (s.updated) parts.push(`${s.updated} updated`);
+  if (s.removed) parts.push(`${s.removed} removed`);
+  if (s.positions) parts.push(`${s.positions} reading position${s.positions === 1 ? '' : 's'}`);
+  let text = parts.length ? `Brought in: ${parts.join(', ')}.` : 'Already up to date.';
+  if (s.waiting) text += ` ${s.waiting} highlight${s.waiting === 1 ? ' is' : 's are'} waiting for books not on this device yet — import those books and they’ll appear.`;
+  return text;
+}
+
+async function showSync() {
+  const last = await lastSyncTime();
+  const when = last
+    ? new Date(last).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : 'never';
+
+  const status1 = h('p', { class: 'sync-status', role: 'status' });
+  const status2 = h('p', { class: 'sync-status', role: 'status' });
+  syncSheetStatus = status1;
+
+  const step2 = h('div', { class: 'sync-step' },
+    h('div', { class: 'sync-num' }, '2'),
+    h('div', { class: 'sync-content' },
+      h('h3', {}, 'Save changes'),
+      h('p', {}, 'Tap Save, choose “Save to Files”, pick iCloud Drive → a folder such as “Margins”, and Save. If asked, choose Replace.'),
+      h('button', {
+        class: 'btn-primary',
+        onclick: async () => {
+          try {
+            const file = await syncOutFile();
+            const result = await saveFile(file);
+            if (result !== 'cancelled') {
+              status2.textContent = result === 'downloaded' ? '✓ Saved to your Downloads folder.' : '✓ Sync file ready — make sure you saved it to iCloud Drive.';
+              step2.classList.add('done');
+            }
+          } catch (e) {
+            status2.textContent = `Couldn’t save: ${e.message}`;
+          }
+        },
+      }, icon('upload'), h('span', {}, 'Save sync file')),
+      status2));
+
+  const step1 = h('div', { class: 'sync-step' },
+    h('div', { class: 'sync-num' }, '1'),
+    h('div', { class: 'sync-content' },
+      h('h3', {}, 'Get changes'),
+      h('p', {}, 'Choose “margins-sync.json” from iCloud Drive. On your very first sync, skip this step.'),
+      h('button', { class: 'btn-secondary', onclick: () => syncInput.click() }, icon('download'), h('span', {}, 'Choose sync file')),
+      status1));
+
+  openSheet({
+    title: 'Sync',
+    subtitle: `Last synced on this device: ${when}`,
+    body: h('div', { class: 'sync' },
+      h('p', { class: 'sync-intro' }, 'Keeps highlights, notes and where you stopped reading the same on your iPad, iPhone and Mac — using one file in your iCloud Drive. Do both steps on each device, one device after the other.'),
+      step1,
+      step2,
+      h('p', { class: 'hint' }, 'Books themselves don’t sync — import each book on every device where you want to read it.')),
+    onClose: () => { syncSheetStatus = null; },
+  });
+}
+
+syncInput.addEventListener('change', async () => {
+  const file = syncInput.files[0];
+  syncInput.value = '';
+  if (!file) return;
+  const status = syncSheetStatus;
+  if (status) status.textContent = 'Syncing…';
+  try {
+    const stats = await syncIn(file);
+    const text = `✓ ${describeStats(stats)} Now do step 2.`;
+    if (status) {
+      status.textContent = text;
+      status.closest('.sync-step')?.classList.add('done');
+    } else toast(text);
+    await refreshLibrary();
+  } catch (e) {
+    if (status) status.textContent = e.message;
+    else alertSheet('Couldn’t sync', e.message);
+  }
+});
+
 async function showSettings() {
   const estimate = await navigator.storage?.estimate?.().catch(() => null);
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
@@ -580,10 +684,11 @@ async function showSettings() {
       h('section', {},
         h('h3', {}, 'Highlights'),
         h('div', { class: 'action-list' },
+          h('button', { class: 'action-item', onclick: () => { sheet.close(); showSync(); } }, icon('sync'), h('span', {}, 'Sync with your other devices')),
           h('button', { class: 'action-item', disabled: !all.length, onclick: () => { sheet.close(); exportAll(); } }, icon('share'), h('span', {}, 'Export all highlights to Notes')),
           h('button', { class: 'action-item', onclick: () => { sheet.close(); backup(); } }, icon('download'), h('span', {}, 'Back up highlights & notes')),
           h('button', { class: 'action-item', onclick: () => { sheet.close(); backupInput.click(); } }, icon('upload'), h('span', {}, 'Restore from a backup'))),
-        h('p', { class: 'hint' }, 'Your books and highlights live only on this device. A backup file (saved to Files or iCloud Drive) keeps your highlights and notes safe and lets you move them to another device.')),
+        h('p', { class: 'hint' }, 'Your books and highlights live only on this device. Sync keeps your devices in step through one file in iCloud Drive; a backup is a dated copy you keep for safety.')),
       h('section', {},
         h('h3', {}, 'Offline & storage'),
         h('p', {}, isStandalone()

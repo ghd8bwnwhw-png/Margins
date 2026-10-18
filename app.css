@@ -635,6 +635,34 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .empty-small p { margin: 8px 0 0; color: var(--ink); }
 .muted { color: var(--muted) !important; }
 
+/* Sync */
+.sync-intro { margin: 0 0 16px; line-height: 1.5; color: var(--muted); }
+.sync-step {
+  display: flex;
+  gap: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.sync-num {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+.sync-step.done .sync-num { background: var(--accent); color: var(--on-accent); }
+.sync-content { flex: 1; min-width: 0; }
+.sync-content h3 { margin: 3px 0 4px; font-size: 16px; }
+.sync-content p { margin: 0 0 12px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.sync-content .sync-status { margin: 10px 0 0; color: var(--ink); font-size: 14px; }
+.sync-status:empty { display: none; }
+
 /* Settings */
 .settings section { margin-bottom: 22px; }
 .settings h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 4px; }

@@ -19,6 +19,7 @@ const ICONS = {
   books: '<path d="M5 19.5V5.5a1 1 0 0 1 1-1h2.5a1 1 0 0 1 1 1v14M9.5 19.5V8a1 1 0 0 1 1-1H13a1 1 0 0 1 1 1v11.5"/><path d="M15 8.4l2.4-.7a1 1 0 0 1 1.2.7l2.8 10.3a1 1 0 0 1-.7 1.2l-2.4.6"/><path d="M3 20.5h18"/>',
   offline: '<path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  sync: '<path d="M19.5 10A7.5 7.5 0 0 0 6.2 6.6L4.5 8.3"/><path d="M4.5 4.5v3.8h3.8"/><path d="M4.5 14a7.5 7.5 0 0 0 13.3 3.4l1.7-1.7"/><path d="M19.5 19.5v-3.8h-3.8"/>',
 };
 
 export function icon(name) {
