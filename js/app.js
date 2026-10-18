@@ -1,0 +1,672 @@
+// app.js — the conductor: library screen, importing books, the reading
+// session, highlights & notes, export to Apple Notes and backups.
+
+import * as db from './db.js';
+import { h, icon, iconButton, openSheet, toast, confirmDialog, alertSheet, actionSheet } from './ui.js';
+import { openEPUB } from './epub.js';
+import { EPUBReader } from './epubreader.js';
+import { exportText, shareText, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
+
+export const VERSION = '1.0.0';
+const COLORS = ['yellow', 'green', 'blue', 'pink'];
+
+const app = document.getElementById('app');
+const fileInput = document.getElementById('file-input');
+const backupInput = document.getElementById('backup-input');
+
+const prefs = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(`margins.${key}`);
+      return v == null ? fallback : JSON.parse(v);
+    } catch { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(`margins.${key}`, JSON.stringify(value)); } catch { /* private mode */ }
+  },
+};
+
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+let library = [];
+let counts = new Map();
+let session = null;
+
+// ======================================================================
+// Library
+// ======================================================================
+
+async function refreshLibrary() {
+  library = await db.getAll('books');
+  counts = new Map();
+  for (const hl of await db.getAll('highlights')) counts.set(hl.bookId, (counts.get(hl.bookId) || 0) + 1);
+  if (!session) renderLibrary();
+}
+
+function renderLibrary() {
+  const books = [...library].sort((a, b) => (b.lastOpenedAt || b.addedAt) - (a.lastOpenedAt || a.addedAt));
+  app.replaceChildren(h('div', { class: 'library-view' },
+    h('header', { class: 'topbar' },
+      h('h1', { class: 'brand' }, 'Margins'),
+      h('div', { class: 'topbar-actions' },
+        iconButton('more', 'Settings & backup', showSettings),
+        h('button', { class: 'btn-primary', onclick: pickFiles }, icon('plus'), h('span', {}, 'Import')))),
+    installBanner(),
+    books.length
+      ? h('main', { class: 'shelf' }, books.map(bookCard))
+      : emptyLibrary()));
+}
+
+function installBanner() {
+  if (isStandalone() || prefs.get('hideInstall', false)) return null;
+  const banner = h('aside', { class: 'install-banner' },
+    h('div', { class: 'install-icon' }, icon('offline')),
+    h('div', { class: 'install-text' },
+      h('strong', {}, 'Read on flights, without internet'),
+      h('p', {}, 'In Safari tap ', h('span', { class: 'inline-icon' }, icon('share')), ' Share → “Add to Home Screen”, then always open Margins from its icon.')),
+    iconButton('close', 'Dismiss', () => { prefs.set('hideInstall', true); banner.remove(); }));
+  return banner;
+}
+
+function emptyLibrary() {
+  return h('main', { class: 'empty' },
+    h('div', { class: 'empty-art' }, icon('books')),
+    h('h2', {}, 'Your library is empty'),
+    h('p', {}, 'Import EPUB or PDF books from the Files app, iCloud Drive or Downloads. They’re stored on this device, so you can read, highlight and take notes without internet.'),
+    h('button', { class: 'btn-primary large', onclick: pickFiles }, icon('plus'), h('span', {}, 'Import books')));
+}
+
+function hueFor(text) {
+  let n = 0;
+  for (const ch of text) n = (n * 31 + ch.codePointAt(0)) % 360;
+  return n;
+}
+
+function cover(book) {
+  const progress = Math.round((book.progress || 0) * 100);
+  const art = book.cover
+    ? h('img', { src: book.cover, alt: '', loading: 'lazy' })
+    : h('div', { class: 'cover-art', style: { '--hue': hueFor(book.title) } },
+        h('span', { class: 'cover-title' }, book.title),
+        book.author ? h('span', { class: 'cover-author' }, book.author) : null);
+  return h('div', { class: 'cover' }, art,
+    progress > 0 ? h('div', { class: 'cover-progress', style: { width: `${progress}%` } }) : null);
+}
+
+function bookCard(book) {
+  const count = counts.get(book.id) || 0;
+  const pct = Math.round((book.progress || 0) * 100);
+  const meta = [book.format.toUpperCase(), pct ? `${pct}%` : 'New', count ? `${count} highlight${count === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+  return h('article', { class: 'book' },
+    h('button', { class: 'book-open', onclick: () => openBook(book.id), 'aria-label': `Open ${book.title}` },
+      cover(book),
+      h('div', { class: 'book-title' }, book.title),
+      book.author ? h('div', { class: 'book-author' }, book.author) : null),
+    h('div', { class: 'book-meta' },
+      h('span', {}, meta),
+      iconButton('more', `Options for ${book.title}`, () => bookOptions(book), 'small')));
+}
+
+function bookOptions(book) {
+  actionSheet(book.title, [
+    { icon: 'highlighter', label: 'Highlights & Notes', action: async () => showHighlights(book, await db.highlightsFor(book.id), null) },
+    { icon: 'share', label: 'Export to Notes', action: () => exportBook(book) },
+    { icon: 'trash', label: 'Delete Book', destructive: true, action: () => deleteBook(book) },
+  ]);
+}
+
+async function deleteBook(book) {
+  const ok = await confirmDialog({
+    title: 'Delete this book?',
+    message: `“${book.title}” and its highlights and notes will be removed from this device. Export them to Notes first if you want to keep them.`,
+    confirm: 'Delete Book',
+    destructive: true,
+  });
+  if (!ok) return;
+  await db.deleteBook(book.id);
+  toast('Book deleted');
+  refreshLibrary();
+}
+
+async function exportBook(book) {
+  const list = await db.highlightsFor(book.id);
+  if (!list.length) { toast('This book has no highlights yet'); return; }
+  const result = await shareText(book.title, exportText(book, list));
+  if (result === 'copied') toast('Copied — paste it into Apple Notes');
+}
+
+// ======================================================================
+// Importing
+// ======================================================================
+
+function pickFiles() {
+  fileInput.click();
+}
+
+fileInput.addEventListener('change', () => {
+  const files = [...fileInput.files];
+  fileInput.value = '';
+  importFiles(files);
+});
+
+async function importFiles(files) {
+  if (!files.length) return;
+  const busy = toast(`Importing ${files.length} book${files.length === 1 ? '' : 's'}…`, { sticky: true });
+  const failures = [];
+  let added = 0;
+  for (const file of files) {
+    try {
+      await importOne(file);
+      added++;
+    } catch (e) {
+      failures.push(`${file.name}: ${e.message}`);
+    }
+  }
+  busy.close();
+  navigator.storage?.persist?.().catch(() => {});
+  await refreshLibrary();
+  if (failures.length) alertSheet(added ? 'Some files weren’t imported' : 'Couldn’t import', failures.join('\n\n'));
+  else toast(`Added ${added} book${added === 1 ? '' : 's'}`);
+}
+
+async function importOne(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const format = ext === 'epub' || file.type === 'application/epub+zip' ? 'epub'
+    : ext === 'pdf' || file.type === 'application/pdf' ? 'pdf' : null;
+  if (!format) throw new Error('Not an EPUB or PDF file.');
+
+  const data = new Blob([await file.arrayBuffer()], { type: format === 'pdf' ? 'application/pdf' : 'application/epub+zip' });
+  let title = file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+  let author = '';
+  let coverImage = null;
+  let pageCount = 0;
+
+  if (format === 'epub') {
+    const epub = await openEPUB(data);
+    title = epub.title || title;
+    author = epub.author;
+    coverImage = await epub.coverThumbnail().catch(() => null);
+    epub.close();
+  } else {
+    const { pdfInfo } = await import('./pdfreader.js');
+    const info = await pdfInfo(data);
+    title = info.title || title;
+    author = info.author;
+    coverImage = info.cover;
+    pageCount = info.pageCount;
+  }
+
+  if (library.some((b) => b.title === title && b.size === file.size && b.format === format)) {
+    throw new Error('Already in your library.');
+  }
+
+  const id = crypto.randomUUID();
+  await db.put('files', { id, blob: data });
+  const book = { id, title, author, format, cover: coverImage, size: file.size, pageCount, addedAt: Date.now(), lastOpenedAt: 0, progress: 0, position: {} };
+  await db.put('books', book);
+  library.push(book);
+}
+
+// ======================================================================
+// Reading
+// ======================================================================
+
+async function openBook(id) {
+  if (session) return;
+  const book = await db.get('books', id);
+  const file = await db.get('files', id);
+  if (!book || !file) { toast('This book could not be found.'); return; }
+  book.lastOpenedAt = Date.now();
+  await db.put('books', book);
+  const highlights = await db.highlightsFor(id);
+  history.pushState({ reader: id }, '');
+  session = new ReaderSession(book, file.blob, highlights);
+  try {
+    await session.start();
+  } catch (e) {
+    console.error(e);
+    session.showError(e.message || 'Something went wrong.');
+  }
+}
+
+function leaveReader() {
+  if (history.state?.reader) history.back();
+  else closeSession();
+}
+
+function closeSession() {
+  if (!session) return;
+  session.close();
+  session = null;
+  refreshLibrary();
+}
+
+window.addEventListener('popstate', () => {
+  if (session && !history.state?.reader) closeSession();
+});
+
+class ReaderSession {
+  constructor(book, blob, highlights) {
+    this.book = book;
+    this.blob = blob;
+    this.highlights = highlights;
+    this.reader = null;
+    this.build();
+  }
+
+  build() {
+    const epub = this.book.format === 'epub';
+    this.label = h('div', { class: 'foot-label' }, 'Opening…');
+    this.prevBtn = iconButton('back', 'Previous chapter', () => this.reader?.go(this.reader.index - 1));
+    this.nextBtn = iconButton('forward', 'Next chapter', () => this.reader?.go(this.reader.index + 1));
+    this.zoomOutBtn = iconButton('minus', 'Zoom out', () => this.zoom(-0.25));
+    this.zoomInBtn = iconButton('plus', 'Zoom in', () => this.zoom(0.25));
+    this.body = h('div', { class: 'reader-body' });
+    this.bar = this.buildHighlightBar();
+
+    this.view = h('div', { class: `reader-view ${epub ? 'is-epub' : 'is-pdf'}` },
+      h('header', { class: 'topbar reader-top' },
+        iconButton('back', 'Back to Library', leaveReader, 'back-btn'),
+        h('div', { class: 'reader-title', title: this.book.title }, this.book.title),
+        h('div', { class: 'topbar-actions' },
+          epub ? iconButton('list', 'Contents', () => this.showContents()) : null,
+          epub ? iconButton('type', 'Text size & typeface', () => this.showTypography()) : null,
+          iconButton('highlighter', 'Highlights & Notes', () => showHighlights(this.book, this.highlights, this)))),
+      this.body,
+      h('footer', { class: 'reader-foot' },
+        epub ? this.prevBtn : this.zoomOutBtn,
+        this.label,
+        epub ? this.nextBtn : this.zoomInBtn),
+      this.bar);
+    app.replaceChildren(this.view);
+
+    this.onKey = (e) => {
+      if (document.querySelector('.sheet.open') || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+      if (e.key === 'ArrowRight' && epub) this.reader?.go(this.reader.index + 1);
+      else if (e.key === 'ArrowLeft' && epub) this.reader?.go(this.reader.index - 1);
+      else if (e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); this.reader?.pageBy(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'PageUp') { e.preventDefault(); this.reader?.pageBy(-1); }
+    };
+    document.addEventListener('keydown', this.onKey);
+  }
+
+  async start() {
+    const callbacks = {
+      onSelection: (has) => this.setSelection(has),
+      onTap: (id) => {
+        const hl = this.highlights.find((x) => x.id === id);
+        if (hl) editHighlight(hl, this);
+      },
+      onPosition: (pos, progress, label) => this.savePosition(pos, progress, label),
+      onChapter: (index, title) => {
+        this.label.textContent = title;
+        this.prevBtn.disabled = index <= 0;
+        this.nextBtn.disabled = index >= this.reader.chapters.length - 1;
+      },
+      onKey: (e) => this.onKey(e),
+    };
+    if (this.book.format === 'epub') {
+      const epub = await openEPUB(this.blob);
+      this.reader = new EPUBReader({
+        container: this.body,
+        epub,
+        highlights: this.highlights,
+        callbacks,
+        typography: { size: prefs.get('fontSize', 100), family: prefs.get('fontFamily', 'original') },
+      });
+    } else {
+      const { PDFReader } = await import('./pdfreader.js');
+      this.reader = new PDFReader({ container: this.body, blob: this.blob, highlights: this.highlights, callbacks });
+    }
+    await this.reader.open(this.book.position || {});
+  }
+
+  buildHighlightBar() {
+    const bar = h('div', { class: 'hl-bar', role: 'toolbar', 'aria-label': 'Highlight the selected text' },
+      COLORS.map((c) => h('button', { class: `hl-dot dot-${c}`, 'aria-label': `Highlight in ${c}`, onclick: () => this.addHighlight(c, false) })),
+      h('span', { class: 'hl-sep', 'aria-hidden': 'true' }),
+      h('button', { class: 'hl-note', onclick: () => this.addHighlight(prefs.get('lastColor', 'yellow'), true) },
+        icon('note'), h('span', {}, 'Note')));
+    // Keep the text selection alive when the bar is pressed
+    bar.addEventListener('mousedown', (e) => e.preventDefault());
+    return bar;
+  }
+
+  setSelection(has) {
+    clearTimeout(this.hideTimer);
+    if (has) this.bar.classList.add('show');
+    else this.hideTimer = setTimeout(() => this.bar.classList.remove('show'), 250);
+  }
+
+  async addHighlight(color, withNote) {
+    const data = this.reader?.captureSelection();
+    this.bar.classList.remove('show');
+    if (!data) { toast('Select some text first'); return; }
+    prefs.set('lastColor', color);
+    const now = Date.now();
+    const hl = { id: crypto.randomUUID(), bookId: this.book.id, color, note: '', createdAt: now, updatedAt: now, ...data };
+    this.highlights.push(hl);
+    this.reader.paint(hl);
+    await db.put('highlights', hl);
+    if (withNote) editHighlight(hl, this);
+  }
+
+  savePosition(pos, progress, label) {
+    if (label) this.label.textContent = label;
+    this.book.position = pos;
+    this.book.progress = progress;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => db.put('books', this.book), 600);
+  }
+
+  zoom(delta) {
+    if (!this.reader?.setZoom) return;
+    const z = this.reader.setZoom(this.reader.zoom + delta);
+    this.zoomOutBtn.disabled = z <= 1;
+    this.zoomInBtn.disabled = z >= 3;
+    toast(`Zoom ${Math.round(z * 100)}%`);
+  }
+
+  showContents() {
+    const chapters = this.reader?.chapters;
+    if (!chapters) return;
+    const hasToc = chapters.some((c) => c.isTocEntry);
+    let current = this.reader.index;
+    if (hasToc) while (current > 0 && !chapters[current].isTocEntry) current--;
+    const items = chapters.map((c, i) => ((!hasToc || c.isTocEntry)
+      ? h('button', {
+        class: `toc-item${i === current ? ' current' : ''}`,
+        onclick: () => { sheet.close(); this.reader.go(i); },
+      }, h('span', {}, c.title), i === current ? icon('check') : null)
+      : null));
+    const sheet = openSheet({ title: 'Contents', subtitle: this.book.title, body: h('nav', { class: 'toc' }, items) });
+    requestAnimationFrame(() => sheet.panel.querySelector('.toc-item.current')?.scrollIntoView({ block: 'center' }));
+  }
+
+  showTypography() {
+    let size = prefs.get('fontSize', 100);
+    let family = prefs.get('fontFamily', 'original');
+    const value = h('span', { class: 'size-value' }, `${size}%`);
+    const apply = () => {
+      prefs.set('fontSize', size);
+      prefs.set('fontFamily', family);
+      value.textContent = `${size}%`;
+      this.reader?.setTypography({ size, family });
+    };
+    const families = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Typeface' },
+      [['original', 'Book'], ['serif', 'Serif'], ['sans', 'Sans']].map(([key, label]) => {
+        const b = h('button', {
+          role: 'radio',
+          class: `seg seg-${key}`,
+          'aria-checked': String(family === key),
+          onclick: () => {
+            family = key;
+            families.querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+            apply();
+          },
+        }, label);
+        return b;
+      }));
+    openSheet({
+      title: 'Text',
+      body: h('div', { class: 'typo' },
+        h('div', { class: 'field-label' }, 'Size'),
+        h('div', { class: 'size-row' },
+          h('button', { class: 'size-btn', 'aria-label': 'Smaller text', onclick: () => { size = Math.max(70, size - 10); apply(); } }, h('span', { class: 'a-small' }, 'A')),
+          value,
+          h('button', { class: 'size-btn', 'aria-label': 'Larger text', onclick: () => { size = Math.min(200, size + 10); apply(); } }, h('span', { class: 'a-large' }, 'A'))),
+        h('div', { class: 'field-label' }, 'Typeface'),
+        families),
+    });
+  }
+
+  showError(message) {
+    this.label.textContent = '';
+    this.body.replaceChildren(h('div', { class: 'reader-error' },
+      h('h2', {}, 'Can’t open this book'),
+      h('p', {}, message),
+      h('button', { class: 'btn-secondary', onclick: leaveReader }, 'Back to Library')));
+  }
+
+  close() {
+    clearTimeout(this.saveTimer);
+    clearTimeout(this.hideTimer);
+    document.removeEventListener('keydown', this.onKey);
+    db.put('books', this.book);
+    try { this.reader?.destroy(); } catch (e) { console.warn(e); }
+  }
+}
+
+// ======================================================================
+// Highlights & notes
+// ======================================================================
+
+async function deleteHighlight(hl, owner, list) {
+  hl.deleted = true;
+  await db.del('highlights', hl.id);
+  const arrays = [owner?.highlights, list].filter(Boolean);
+  for (const arr of arrays) {
+    const i = arr.indexOf(hl);
+    if (i >= 0) arr.splice(i, 1);
+  }
+  owner?.reader?.unpaint(hl);
+}
+
+function editHighlight(hl, owner, { list, onChange } = {}) {
+  const quote = h('blockquote', { class: `editor-quote q-${hl.color}` }, hl.text);
+  const note = h('textarea', { class: 'note-input', placeholder: 'Add your thoughts…', rows: '5', 'aria-label': 'Note' });
+  note.value = hl.note || '';
+
+  let timer;
+  const save = () => {
+    clearTimeout(timer);
+    if (hl.deleted) return;
+    hl.note = note.value;
+    hl.updatedAt = Date.now();
+    db.put('highlights', hl);
+    onChange?.();
+  };
+  note.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(save, 400); });
+
+  const colorRow = h('div', { class: 'color-row', role: 'radiogroup', 'aria-label': 'Highlight colour' },
+    COLORS.map((c) => {
+      const b = h('button', {
+        class: `color-choice dot-${c}`,
+        role: 'radio',
+        'aria-checked': String(hl.color === c),
+        'aria-label': c,
+        onclick: () => {
+          hl.color = c;
+          prefs.set('lastColor', c);
+          colorRow.querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+          quote.className = `editor-quote q-${c}`;
+          owner?.reader?.repaint(hl);
+          save();
+        },
+      }, icon('check'));
+      return b;
+    }));
+
+  const sheet = openSheet({
+    title: 'Highlight',
+    subtitle: locationLabel(hl),
+    closeLabel: 'Done',
+    body: h('div', { class: 'editor' },
+      quote,
+      h('label', { class: 'field-label', for: 'note-field' }, 'Note'),
+      note,
+      h('div', { class: 'field-label' }, 'Colour'),
+      colorRow,
+      h('button', {
+        class: 'btn-danger-text',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: 'Delete this highlight?', message: 'Its note will be deleted too.', confirm: 'Delete Highlight', destructive: true });
+          if (!ok) return;
+          await deleteHighlight(hl, owner, list);
+          sheet.close();
+          onChange?.();
+          toast('Highlight deleted');
+        },
+      }, icon('trash'), h('span', {}, 'Delete highlight'))),
+    onClose: save,
+  });
+  note.id = 'note-field';
+  if (!hl.note && !matchMedia('(pointer: coarse)').matches) setTimeout(() => note.focus(), 320);
+}
+
+function showHighlights(book, list, owner) {
+  const listEl = h('div', { class: 'hl-list' });
+  const count = h('span', { class: 'hl-count' });
+  const copyBtn = h('button', {
+    class: 'btn-secondary small',
+    onclick: async () => { await copyText(exportText(book, list)); toast('Copied to clipboard'); },
+  }, icon('copy'), h('span', {}, 'Copy'));
+  const exportBtn = h('button', {
+    class: 'btn-primary small',
+    onclick: async () => {
+      const result = await shareText(book.title, exportText(book, list));
+      if (result === 'copied') toast('Copied — paste it into Apple Notes');
+    },
+  }, icon('share'), h('span', {}, 'Export to Notes'));
+
+  const render = () => {
+    const items = sortHighlights(list);
+    count.textContent = items.length ? `${items.length} highlight${items.length === 1 ? '' : 's'}` : '';
+    copyBtn.disabled = exportBtn.disabled = !items.length;
+    if (!items.length) {
+      listEl.replaceChildren(h('div', { class: 'empty-small' },
+        icon('highlighter'),
+        h('p', {}, 'No highlights yet'),
+        h('p', { class: 'muted' }, 'Select text while reading, then tap a colour.')));
+      return;
+    }
+    listEl.replaceChildren(...items.map((hl) => h('div', { class: `hl-item q-${hl.color}` },
+      h('button', {
+        class: 'hl-item-main',
+        onclick: () => {
+          if (owner) { sheet.close(); owner.reader.jumpTo(hl); }
+          else editHighlight(hl, null, { list, onChange: render });
+        },
+      },
+        h('div', { class: 'hl-item-loc' }, locationLabel(hl)),
+        h('div', { class: 'hl-item-text' }, hl.text),
+        hl.note ? h('div', { class: 'hl-item-note' }, icon('note'), h('span', {}, hl.note)) : null),
+      iconButton('note', 'Edit note', () => editHighlight(hl, owner, { list, onChange: render }), 'hl-item-edit'))));
+  };
+
+  const sheet = openSheet({
+    title: 'Highlights & Notes',
+    subtitle: book.title,
+    body: h('div', {}, h('div', { class: 'hl-toolbar' }, count, h('div', { class: 'row' }, copyBtn, exportBtn)), listEl),
+    onClose: () => { if (!owner) refreshLibrary(); },
+  });
+  render();
+}
+
+// ======================================================================
+// Settings, backup & restore
+// ======================================================================
+
+async function showSettings() {
+  const estimate = await navigator.storage?.estimate?.().catch(() => null);
+  const persisted = await navigator.storage?.persisted?.().catch(() => false);
+  const mb = (bytes) => `${(bytes / 1048576).toFixed(bytes > 1048576 * 10 ? 0 : 1)} MB`;
+  const all = await db.getAll('highlights');
+
+  const sheet = openSheet({
+    title: 'Margins',
+    subtitle: `Version ${VERSION}`,
+    body: h('div', { class: 'settings' },
+      h('section', {},
+        h('h3', {}, 'Highlights'),
+        h('div', { class: 'action-list' },
+          h('button', { class: 'action-item', disabled: !all.length, onclick: () => { sheet.close(); exportAll(); } }, icon('share'), h('span', {}, 'Export all highlights to Notes')),
+          h('button', { class: 'action-item', onclick: () => { sheet.close(); backup(); } }, icon('download'), h('span', {}, 'Back up highlights & notes')),
+          h('button', { class: 'action-item', onclick: () => { sheet.close(); backupInput.click(); } }, icon('upload'), h('span', {}, 'Restore from a backup'))),
+        h('p', { class: 'hint' }, 'Your books and highlights live only on this device. A backup file (saved to Files or iCloud Drive) keeps your highlights and notes safe and lets you move them to another device.')),
+      h('section', {},
+        h('h3', {}, 'Offline & storage'),
+        h('p', {}, isStandalone()
+          ? 'Installed on your Home Screen — Margins works without internet.'
+          : 'To read offline, open this page in Safari, tap Share → “Add to Home Screen”, and open Margins from its icon.'),
+        estimate ? h('p', { class: 'muted' }, `${mb(estimate.usage || 0)} used on this device${persisted ? ' · protected from automatic clean-up' : ''}.`) : null),
+      h('section', {},
+        h('h3', {}, 'Good to know'),
+        h('p', { class: 'muted' }, 'Books bought in Apple Books, Kindle or Kobo are copy-protected (DRM) and can’t be opened here. DRM-free EPUBs and any normal PDF work. PDF rendering by Mozilla PDF.js.'))),
+  });
+}
+
+async function exportAll() {
+  const books = await db.getAll('books');
+  const all = await db.getAll('highlights');
+  const parts = [];
+  for (const book of books) {
+    const list = all.filter((hl) => hl.bookId === book.id);
+    if (list.length) parts.push(exportText(book, list));
+  }
+  if (!parts.length) { toast('No highlights yet'); return; }
+  const result = await shareText('Margins highlights', parts.join('\n\n\n'));
+  if (result === 'copied') toast('Copied — paste it into Apple Notes');
+}
+
+async function backup() {
+  const file = makeBackupFile(await db.getAll('books'), await db.getAll('highlights'));
+  const result = await saveFile(file);
+  if (result === 'downloaded') toast('Backup downloaded');
+}
+
+backupInput.addEventListener('change', async () => {
+  const file = backupInput.files[0];
+  backupInput.value = '';
+  if (file) await restoreBackup(file);
+});
+
+async function restoreBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { data = null; }
+  if (data?.app !== 'margins' || !Array.isArray(data.highlights)) {
+    alertSheet('Not a Margins backup', 'Please choose a file named like “margins-backup-2026-10-18.json”.');
+    return;
+  }
+  const books = await db.getAll('books');
+  const existing = new Set((await db.getAll('highlights')).map((x) => x.id));
+  const match = new Map();
+  for (const b of data.books || []) {
+    const local = books.find((x) => x.id === b.id)
+      || books.find((x) => x.title === b.title && x.format === b.format && x.size === b.size)
+      || books.find((x) => x.title === b.title && x.format === b.format);
+    if (local) match.set(b.id, local.id);
+  }
+  let added = 0;
+  let missing = 0;
+  for (const hl of data.highlights) {
+    const bookId = match.get(hl.bookId);
+    if (!bookId) { missing++; continue; }
+    if (existing.has(hl.id)) continue;
+    await db.put('highlights', { ...hl, bookId });
+    added++;
+  }
+  await refreshLibrary();
+  alertSheet('Backup restored',
+    `${added} highlight${added === 1 ? '' : 's'} added.` +
+    (missing ? `\n\n${missing} belong to books that aren’t in this library yet. Import those books, then restore the backup again.` : ''));
+}
+
+// ======================================================================
+// Start
+// ======================================================================
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => {
+      if (!prefs.get('offlineReady', false)) {
+        prefs.set('offlineReady', true);
+        toast('Margins is ready to work offline');
+      }
+    })
+    .catch((e) => console.warn('Offline support unavailable', e));
+}
+
+history.replaceState(null, '');
+refreshLibrary();
