@@ -2,7 +2,7 @@
 // and works without internet (like downloading a film before a flight).
 // The list below is every file the app needs.
 
-const CACHE = 'margins-readaloud-2';
+const CACHE = 'margins-readaloud-3';
 const ASSETS = [
   "./",
   "app.css",

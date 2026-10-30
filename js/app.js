@@ -520,11 +520,14 @@ class ReaderSession {
     const voices = voicesFor(this.speechLang);
     const current = this.readAloud?.voice?.voiceURI;
     const good = voices.some((v) => voiceQuality(v) >= 2);
-    const tip = h('p', { class: 'hint ra-tip' },
-      good ? 'For the most natural sound, pick a Premium or Enhanced voice. ' : 'Only basic voices are installed for this language. ',
-      'You can download better ones on this device: Settings → Accessibility → Spoken Content (on newer iOS: Read & Speak) → Voices. Premium voices sound the most human. Then reopen Margins.');
+    const tip = h('p', { class: 'hint ra-tip' }, good
+      ? 'Premium and Enhanced voices sound the most natural.'
+      : 'Safari only lets web apps like Margins use Apple’s standard voices, so voices you download in Settings (Enhanced, Premium, or newer ones like Jamie) can’t appear here.');
+    const seen = {};
     const list = h('div', { class: 'ra-voices' }, voices.map((v) => {
-      const { name, tag } = voiceLabel(v);
+      const { name: base, tag } = voiceLabel(v);
+      seen[base] = (seen[base] || 0) + 1;
+      const name = seen[base] > 1 ? `${base} ${seen[base]}` : base;
       return h('button', {
         class: `toc-item${v.voiceURI === current ? ' current' : ''}`,
         onclick: () => {

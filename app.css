@@ -444,6 +444,8 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .ra-voice-name { overflow: hidden; text-overflow: ellipsis; }
 .icon-btn.active { background: var(--accent-soft); }
 .reader-view.ra-open .hl-bar { bottom: calc(132px + var(--safe-bottom)); }
+.ra-voices { display: flex; flex-direction: column; }
+.ra-voices .toc-item { width: 100%; }
 .ra-voice-row { display: flex; flex-direction: column; gap: 2px; text-align: left; }
 .ra-voice-meta { font-size: 13px; color: var(--muted); }
 .ra-tip { line-height: 1.45; margin: 8px 4px 12px; }
