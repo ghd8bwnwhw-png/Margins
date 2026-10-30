@@ -10,8 +10,8 @@ const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 const BASE_CSS = `
   html { overflow: hidden !important; height: auto !important; -webkit-text-size-adjust: 100%; }
   html, body { background: transparent !important; min-height: 0 !important; }
-  body { height: auto !important; max-width: 38em; margin: 0 auto !important;
-         padding: 28px 22px 48px !important; line-height: 1.6; overflow-wrap: break-word;
+  body { height: auto !important; max-width: none !important; margin: 0 !important;
+         padding: 28px max(22px, 4.5vw) 48px !important; line-height: 1.6; overflow-wrap: break-word;
          box-sizing: border-box; }
   img, svg, video { max-width: 100% !important; height: auto !important; }
   a { color: #2f5d50; }

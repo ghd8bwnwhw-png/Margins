@@ -139,7 +139,7 @@ export class PDFReader {
 
   layout() {
     const available = this.scroller.clientWidth;
-    const width = Math.round(Math.min(available - 16, 1100) * this.zoom);
+    const width = Math.round((available - 8) * this.zoom);
     this.pages.forEach((p, i) => {
       const s = this.sizes[i];
       p.scale = width / s.w;

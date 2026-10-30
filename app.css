@@ -361,10 +361,11 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
   font-weight: 600;
 }
 .next-chapter .icon { width: 18px; height: 18px; }
+.next-chapter[hidden], .end-of-book[hidden] { display: none; }
 .end-of-book { font-family: var(--serif); color: var(--muted); font-style: italic; }
 
 .pdf-scroller { background: var(--bg); overflow-x: auto; }
-.pdf-pages { padding: 12px 8px 40px; }
+.pdf-pages { padding: 8px 4px 40px; }
 .pdf-page {
   position: relative;
   margin: 0 auto 12px;
