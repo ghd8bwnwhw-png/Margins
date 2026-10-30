@@ -10,11 +10,46 @@ const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
 export const speechSupported = () => !!(synth && window.SpeechSynthesisUtterance);
 
 /**
- * iPhones and iPads only let a page start speaking straight from a tap.
- * Call this first thing inside the tap so the narrator is allowed to talk later.
+ * A silent sound that plays (looped) while the narrator reads. On iPhone and
+ * iPad this switches the page into "media playback" mode, like a podcast
+ * app, so the voice isn't muted by Silent Mode and keeps its volume.
+ */
+let keeper = null;
+function silentTrack() {
+  if (keeper) return keeper;
+  const rate = 8000;
+  const n = rate; // one second
+  const buf = new ArrayBuffer(44 + n);
+  const v = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+  str(36, 'data'); v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128); // 128 = silence for 8-bit sound
+  keeper = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+  keeper.loop = true;
+  keeper.setAttribute('playsinline', '');
+  return keeper;
+}
+
+function startPlaybackMode() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* older iOS */ }
+  try { silentTrack().play()?.catch?.(() => {}); } catch { /* ignore */ }
+}
+
+function stopPlaybackMode() {
+  try { keeper?.pause(); } catch { /* ignore */ }
+}
+
+/**
+ * iPhones and iPads only let a page start speaking (and playing sound)
+ * straight from a tap. Call this first thing inside the tap.
  */
 export function unlockSpeech() {
-  if (!speechSupported() || unlockSpeech.done) return;
+  if (!speechSupported()) return;
+  startPlaybackMode();
+  if (unlockSpeech.done) return;
   try {
     const u = new SpeechSynthesisUtterance(' ');
     u.volume = 0;
@@ -156,6 +191,7 @@ export class ReadAloud {
       if (!next) return;
     }
     this.playing = true;
+    startPlaybackMode();
     this.keepAwake();
     this.onState(this.state());
     this.speak();
@@ -165,6 +201,7 @@ export class ReadAloud {
     this.playing = false;
     this.token++;
     synth?.cancel();
+    stopPlaybackMode();
     this.releaseWake();
     this.onState(this.state());
   }
@@ -208,7 +245,7 @@ export class ReadAloud {
     this.units = null;
     this.index = 0;
     this.reader.speechClear?.();
-    if (was) { this.playing = false; this.releaseWake(); this.onState(this.state()); }
+    if (was) { this.playing = false; stopPlaybackMode(); this.releaseWake(); this.onState(this.state()); }
   }
 
   /** Text changed underneath (e.g. a new highlight split a sentence): re-read the sentence map. */
@@ -229,6 +266,7 @@ export class ReadAloud {
         this.playing = false;
         this.units = null;
         this.reader.speechClear();
+        stopPlaybackMode();
         this.releaseWake();
         this.onState({ ...this.state(), finished: true });
         return false;
@@ -268,6 +306,25 @@ export class ReadAloud {
     setTimeout(() => { if (token === this.token && this.playing) synth.speak(u); }, 60);
   }
 
+  /** Play/pause/skip from Control Center and headphones. */
+  setMediaControls(title, author) {
+    const ms = navigator.mediaSession;
+    if (!ms) return;
+    try {
+      if (window.MediaMetadata) ms.metadata = new MediaMetadata({ title: title || 'Margins', artist: author || '', album: 'Margins' });
+      ms.setActionHandler('play', () => this.play());
+      ms.setActionHandler('pause', () => this.pause());
+      ms.setActionHandler('nexttrack', () => this.skip(1));
+      ms.setActionHandler('previoustrack', () => this.skip(-1));
+    } catch { /* not supported */ }
+  }
+
+  clearMediaControls() {
+    const ms = navigator.mediaSession;
+    if (!ms) return;
+    for (const a of ['play', 'pause', 'nexttrack', 'previoustrack']) { try { ms.setActionHandler(a, null); } catch { /* ignore */ } }
+  }
+
   state() {
     return { playing: this.playing, index: this.index, count: this.units?.length || 0 };
   }
@@ -291,8 +348,10 @@ export class ReadAloud {
     this.token++;
     this.playing = false;
     synth?.cancel();
+    stopPlaybackMode();
     this.releaseWake();
     this.reader.speechClear?.();
+    this.clearMediaControls();
     document.removeEventListener('visibilitychange', this.onVisibility);
   }
 }

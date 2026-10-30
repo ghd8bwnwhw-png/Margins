@@ -486,6 +486,7 @@ class ReaderSession {
         },
       });
     }
+    this.readAloud.setMediaControls(this.book.title, this.book.author);
     await voicesReady();
     this.updateVoiceName();
     this.readAloud.play();
