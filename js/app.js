@@ -762,8 +762,22 @@ async function restoreBackup(file) {
 // ======================================================================
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js')
-    .then(() => navigator.serviceWorker.ready)
+  // When a new version of Margins has been downloaded, switch to it once.
+  const hadVersion = !!navigator.serviceWorker.controller;
+  let switching = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadVersion || switching) return;
+    switching = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      // A Home Screen app is often resumed, not restarted: check for updates each time it comes back.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && navigator.onLine) reg.update().catch(() => {});
+      });
+      return navigator.serviceWorker.ready;
+    })
     .then(() => {
       if (!prefs.get('offlineReady', false)) {
         prefs.set('offlineReady', true);
