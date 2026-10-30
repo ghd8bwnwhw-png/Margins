@@ -2,7 +2,7 @@
 // and works without internet (like downloading a film before a flight).
 // The list below is every file the app needs.
 
-const CACHE = 'margins-fitwidth-2';
+const CACHE = 'margins-readaloud-1';
 const ASSETS = [
   "./",
   "app.css",
@@ -18,6 +18,7 @@ const ASSETS = [
   "js/export.js",
   "js/highlighter.js",
   "js/pdfreader.js",
+  "js/speech.js",
   "js/sync.js",
   "js/ui.js",
   "js/zip.js",

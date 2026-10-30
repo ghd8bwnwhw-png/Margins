@@ -4,6 +4,7 @@
 // Highlights are stored as rectangles measured in fractions of the page,
 // so they fit at every zoom level and screen size.
 
+import { splitSentences } from './speech.js';
 import * as pdfjsLib from '../vendor/pdfjs/pdf.mjs';
 import { h } from './ui.js';
 
@@ -343,6 +344,58 @@ export class PDFReader {
     const progress = (pos.page + pos.offset) / n;
     this.cb.onPosition?.(pos, progress, `Page ${pos.page + 1} of ${n}`);
   }
+
+  // ---- Read aloud ----
+
+  /** The words of one page, as plain sentences. */
+  async pageSentences(i) {
+    this.textCache ??= new Map();
+    if (this.textCache.has(i)) return this.textCache.get(i);
+    const page = await this.pdf.getPage(i + 1);
+    const content = await page.getTextContent();
+    let text = '';
+    for (const item of content.items) {
+      if (typeof item.str !== 'string') continue;
+      text += item.str;
+      if (item.hasEOL) text = /[-\u00ad]$/.test(text) ? text.replace(/[-\u00ad]$/, '') : `${text} `;
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    const units = splitSentences(text).map(([a, b]) => ({ text: text.slice(a, b).trim(), page: i })).filter((u) => u.text);
+    if (this.textCache.size > 20) this.textCache.clear();
+    this.textCache.set(i, units);
+    return units;
+  }
+
+  async speechSection() {
+    this.speechPage = this.position().page;
+    return { units: await this.pageSentences(this.speechPage), start: 0 };
+  }
+
+  async speechNextSection() {
+    while (this.speechPage < this.pages.length - 1) {
+      this.speechPage++;
+      const units = await this.pageSentences(this.speechPage);
+      if (units.length) return { units, start: 0 };
+    }
+    return null;
+  }
+
+  speechInView(unit) {
+    if (unit?.page == null || !this.pages[unit.page]) return false;
+    const div = this.pages[unit.page].div;
+    const top = this.scroller.scrollTop;
+    return div.offsetTop + div.offsetHeight > top && div.offsetTop < top + this.scroller.clientHeight;
+  }
+
+  speechShow(unit) {
+    // Bring the page being read onto the screen when the narrator reaches it
+    if (!this.speechInView(unit)) {
+      const div = this.pages[unit.page]?.div;
+      if (div) this.scroller.scrollTo({ top: div.offsetTop - 4, behavior: 'smooth' });
+    }
+  }
+
+  speechClear() {}
 
   pageBy(direction) {
     this.scroller.scrollBy({ top: this.scroller.clientHeight * 0.9 * direction, behavior: 'smooth' });

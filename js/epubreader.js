@@ -4,6 +4,11 @@
 import { h, icon } from './ui.js';
 import * as HL from './highlighter.js';
 import { resolvePath, dirOf } from './epub.js';
+import { splitSentences } from './speech.js';
+
+// Elements that hold readable text, read one after another
+const BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,dt,dd,figcaption,caption,td,th,pre,div,section,article,aside';
+const SKIP = 'script,style,rt,rp,noscript,svg,math,head,title,sup a,a[epub\\:type~="noteref"]';
 
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 
@@ -22,12 +27,16 @@ const BASE_CSS = `
   mark.rh-blue   { background-color: rgba(10, 132, 255, 0.30) !important; }
   mark.rh-pink   { background-color: rgba(255, 55, 135, 0.30) !important; }
   ::selection { background: rgba(47, 93, 80, 0.28); }
+  ::highlight(read-aloud) { background-color: rgba(47, 93, 80, 0.16); }
+  .read-aloud-block { background-color: rgba(47, 93, 80, 0.08) !important; border-radius: 4px; }
   @media (prefers-color-scheme: dark) {
     html, body { color: #ece7dd !important; }
     body * { color: inherit !important; background-color: transparent; border-color: #3a3733; }
     a { color: #86c2ad !important; }
     img { opacity: 0.92; }
     mark.rh-yellow { background-color: rgba(255, 204, 0, 0.32) !important; }
+    ::highlight(read-aloud) { background-color: rgba(134, 194, 173, 0.24); }
+    .read-aloud-block { background-color: rgba(134, 194, 173, 0.1) !important; }
     ::selection { background: rgba(134, 194, 173, 0.35); }
   }
 `;
@@ -257,6 +266,105 @@ export class EPUBReader {
     const index = this.chapters.findIndex((c) => c.path === target);
     if (index === this.index) { if (fragment) this.scrollToId(fragment); }
     else if (index >= 0) this.go(index, { fragment });
+  }
+
+  // ---- Read aloud ----
+
+  /** The book's language as written in the chapter itself, if any. */
+  get language() {
+    const el = this.doc?.documentElement;
+    return el?.getAttribute('xml:lang') || el?.getAttribute('lang') || this.doc?.body?.getAttribute('lang') || '';
+  }
+
+  /** Every sentence of this chapter, in reading order, each with its place on the page. */
+  speechUnits() {
+    const doc = this.doc;
+    if (!doc?.body) return [];
+    const lang = this.language;
+    const blocks = [...doc.body.querySelectorAll(BLOCKS)].filter((el) => !el.querySelector(BLOCKS) && !el.closest(SKIP));
+    // Text sitting directly in <body> or a container (no block of its own) is read too
+    if (!blocks.length) blocks.push(doc.body);
+    const units = [];
+    for (const block of blocks) {
+      const walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.parentElement?.closest(SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      });
+      const nodes = [];
+      let text = '';
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        nodes.push({ node: n, start: text.length });
+        text += n.data;
+      }
+      if (!/[\p{L}\p{N}]/u.test(text)) continue;
+      const locate = (offset, isEnd) => {
+        let i = nodes.length - 1;
+        while (i > 0 && (isEnd ? nodes[i].start >= offset : nodes[i].start > offset)) i--;
+        return { node: nodes[i].node, offset: Math.min(offset - nodes[i].start, nodes[i].node.length) };
+      };
+      for (const [a, b] of splitSentences(text, lang)) {
+        const spoken = text.slice(a, b).replace(/\s+/g, ' ').trim();
+        if (!spoken) continue;
+        const range = doc.createRange();
+        const from = locate(a, false);
+        const to = locate(b, true);
+        try {
+          range.setStart(from.node, from.offset);
+          range.setEnd(to.node, to.offset);
+        } catch { continue; }
+        units.push({ text: spoken, range, block });
+      }
+    }
+    return units;
+  }
+
+  /** First sentence that starts on screen (or just below the top edge). */
+  firstVisible(units) {
+    const top = this.scroller.scrollTop - this.frame.offsetTop;
+    const i = units.findIndex((u) => u.range.getBoundingClientRect().bottom > top + 12);
+    return i < 0 ? 0 : i;
+  }
+
+  async speechSection(fromView) {
+    const units = this.speechUnits();
+    return { units, start: fromView ? this.firstVisible(units) : 0 };
+  }
+
+  async speechNextSection() {
+    if (this.index >= this.chapters.length - 1) return null;
+    await this.go(this.index + 1, { fraction: 0 });
+    this.autoPosition = null;
+    return { units: this.speechUnits(), start: 0 };
+  }
+
+  speechInView(unit) {
+    if (!unit?.range || !this.doc || unit.range.startContainer.ownerDocument !== this.doc) return false;
+    const r = unit.range.getBoundingClientRect();
+    const top = this.scroller.scrollTop - this.frame.offsetTop;
+    return r.bottom > top && r.top < top + this.scroller.clientHeight;
+  }
+
+  speechShow(unit) {
+    this.speechClear();
+    const win = this.frame.contentWindow;
+    if (win?.CSS?.highlights && win.Highlight) {
+      win.CSS.highlights.set('read-aloud', new win.Highlight(unit.range));
+    } else {
+      unit.block?.classList.add('read-aloud-block');
+      this.markedBlock = unit.block;
+    }
+    // Keep the sentence comfortably on screen, a third of the way down
+    const r = unit.range.getBoundingClientRect();
+    const top = this.scroller.scrollTop - this.frame.offsetTop;
+    const height = this.scroller.clientHeight;
+    if (r.top < top + 40 || r.bottom > top + height - 140) {
+      this.scroller.scrollTo({ top: Math.max(0, this.frame.offsetTop + r.top - height / 3), behavior: 'smooth' });
+    }
+  }
+
+  speechClear() {
+    try { this.frame.contentWindow?.CSS?.highlights?.delete('read-aloud'); } catch { /* frame gone */ }
+    this.markedBlock?.classList.remove('read-aloud-block');
+    this.markedBlock = null;
   }
 
   // ---- Position ----

@@ -69,6 +69,7 @@ export async function openEPUB(blob) {
 
   const title = clean(byTag(opf, 'title')[0]?.textContent);
   const author = clean(byTag(opf, 'creator')[0]?.textContent);
+  const language = clean(byTag(opf, 'language')[0]?.textContent);
 
   // Manifest: every file in the book
   const manifest = new Map();
@@ -140,7 +141,7 @@ export async function openEPUB(blob) {
     cover = [...manifest.values()].find((m) => m.type.startsWith('image/') && /cover/i.test(m.id + m.path));
   }
 
-  return new EPUBBook(zip, { title, author, chapters, coverPath: cover?.type?.startsWith('image/') ? cover.path : null });
+  return new EPUBBook(zip, { title, author, language, chapters, coverPath: cover?.type?.startsWith('image/') ? cover.path : null });
 }
 
 export class EPUBBook {
@@ -148,6 +149,7 @@ export class EPUBBook {
     this.zip = zip;
     this.title = meta.title;
     this.author = meta.author;
+    this.language = meta.language || '';
     this.chapters = meta.chapters;
     this.coverPath = meta.coverPath;
     this.urls = new Map();

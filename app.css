@@ -414,6 +414,44 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .hl-note { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--accent); padding: 4px 6px; }
 .hl-note .icon { width: 19px; height: 19px; }
 
+/* Read-aloud player */
+.ra-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.ra-bar[hidden] { display: none; }
+.ra-controls { display: flex; align-items: center; gap: 6px; }
+.ra-play {
+  width: 48px; height: 48px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--on-accent);
+}
+.ra-play .icon { width: 22px; height: 22px; }
+.ra-play:active { transform: scale(0.94); }
+.ra-chip {
+  padding: 7px 11px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+}
+.ra-voice { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.ra-bar > .ra-voice { flex: 0 1 auto; }
+.ra-bar > .ra-controls { margin: 0 auto; }
+.ra-right { display: flex; align-items: center; gap: 2px; }
+.ra-voice-name { overflow: hidden; text-overflow: ellipsis; }
+.icon-btn.active { background: var(--accent-soft); }
+.reader-view.ra-open .hl-bar { bottom: calc(132px + var(--safe-bottom)); }
+.ra-voice-row { display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.ra-voice-meta { font-size: 13px; color: var(--muted); }
+.ra-tip { line-height: 1.45; margin: 8px 4px 12px; }
+@media (max-width: 420px) {
+  .ra-bar { gap: 4px; }
+  .ra-chip { padding: 6px 9px; font-size: 13px; }
+}
+
 /* ---------- Sheets ---------- */
 
 .sheet-backdrop {

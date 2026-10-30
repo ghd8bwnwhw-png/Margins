@@ -6,6 +6,7 @@ import { h, icon, iconButton, openSheet, toast, confirmDialog, alertSheet, actio
 import { openEPUB } from './epub.js';
 import { EPUBReader } from './epubreader.js';
 import { exportText, shareText, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
+import { ReadAloud, unlockSpeech, speechSupported, voicesFor, voicesReady, voiceLabel, voiceQuality } from './speech.js';
 import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
 
 export const VERSION = '1.1.0';
@@ -270,6 +271,7 @@ class ReaderSession {
     this.zoomInBtn = iconButton('plus', 'Zoom in', () => this.zoom(0.25));
     this.body = h('div', { class: 'reader-body' });
     this.bar = this.buildHighlightBar();
+    this.player = this.buildPlayer();
 
     this.view = h('div', { class: `reader-view ${epub ? 'is-epub' : 'is-pdf'}` },
       h('header', { class: 'topbar reader-top' },
@@ -278,8 +280,10 @@ class ReaderSession {
         h('div', { class: 'topbar-actions' },
           epub ? iconButton('list', 'Contents', () => this.showContents()) : null,
           epub ? iconButton('type', 'Text size & typeface', () => this.showTypography()) : null,
+          speechSupported() ? (this.speakBtn = iconButton('speaker', 'Read aloud', () => this.togglePlayer())) : null,
           iconButton('highlighter', 'Highlights & Notes', () => showHighlights(this.book, this.highlights, this)))),
       this.body,
+      this.player,
       h('footer', { class: 'reader-foot' },
         epub ? this.prevBtn : this.zoomOutBtn,
         this.label,
@@ -306,6 +310,7 @@ class ReaderSession {
       },
       onPosition: (pos, progress, label) => this.savePosition(pos, progress, label),
       onChapter: (index, title) => {
+        this.readAloud?.invalidate();
         this.label.textContent = title;
         this.prevBtn.disabled = index <= 0;
         this.nextBtn.disabled = index >= this.reader.chapters.length - 1;
@@ -354,6 +359,7 @@ class ReaderSession {
     const hl = { id: crypto.randomUUID(), bookId: this.book.id, color, note: '', createdAt: now, updatedAt: now, ...data };
     this.highlights.push(hl);
     this.reader.paint(hl);
+    this.readAloud?.refresh();
     await db.put('highlights', hl);
     if (withNote) editHighlight(hl, this);
   }
@@ -436,7 +442,120 @@ class ReaderSession {
       h('button', { class: 'btn-secondary', onclick: leaveReader }, 'Back to Library')));
   }
 
+  // ---- Read aloud ----
+
+  get speechLang() {
+    return this.reader?.epub?.language || this.reader?.language || navigator.language || 'en';
+  }
+
+  get voiceKey() { return `voice.${this.speechLang.toLowerCase().split(/[-_]/)[0]}`; }
+
+  buildPlayer() {
+    this.playBtn = h('button', { class: 'ra-play', 'aria-label': 'Play', onclick: () => { unlockSpeech(); this.readAloud?.toggle(); } }, icon('play'));
+    this.rateBtn = h('button', { class: 'ra-chip', 'aria-label': 'Reading speed', onclick: () => this.cycleRate() }, `${prefs.get('speechRate', 1)}×`);
+    this.voiceName = h('span', { class: 'ra-voice-name' }, 'Voice');
+    const voiceBtn = h('button', { class: 'ra-chip ra-voice', 'aria-label': 'Choose voice', onclick: () => this.showVoices() }, this.voiceName);
+    return h('div', { class: 'ra-bar', role: 'toolbar', 'aria-label': 'Read aloud', hidden: true },
+      voiceBtn,
+      h('div', { class: 'ra-controls' },
+        iconButton('skipBack', 'Previous sentence', () => this.readAloud?.skip(-1)),
+        this.playBtn,
+        iconButton('skipFwd', 'Next sentence', () => this.readAloud?.skip(1))),
+      h('div', { class: 'ra-right' },
+        this.rateBtn,
+        iconButton('close', 'Stop reading aloud', () => this.closePlayer(), 'small')));
+  }
+
+  async togglePlayer() {
+    if (!this.player.hidden) { this.closePlayer(); return; }
+    if (!this.reader?.speechSection) return;
+    unlockSpeech();
+    this.player.hidden = false;
+    this.view.classList.add('ra-open');
+    this.speakBtn?.classList.add('active');
+    if (!this.readAloud) {
+      this.readAloud = new ReadAloud({
+        reader: this.reader,
+        lang: this.speechLang,
+        getVoiceURI: () => prefs.get(this.voiceKey, null),
+        rate: prefs.get('speechRate', 1),
+        onState: (st) => {
+          this.playBtn.replaceChildren(icon(st.playing ? 'pause' : 'play'));
+          this.playBtn.setAttribute('aria-label', st.playing ? 'Pause' : 'Play');
+          if (st.finished) toast('End of the book');
+        },
+      });
+    }
+    await voicesReady();
+    this.updateVoiceName();
+    this.readAloud.play();
+  }
+
+  closePlayer() {
+    this.readAloud?.pause();
+    this.reader?.speechClear?.();
+    if (this.readAloud) this.readAloud.units = null;
+    this.player.hidden = true;
+    this.view.classList.remove('ra-open');
+    this.speakBtn?.classList.remove('active');
+  }
+
+  updateVoiceName() {
+    const v = this.readAloud?.voice;
+    this.voiceName.textContent = v ? voiceLabel(v).name : 'Voice';
+  }
+
+  cycleRate() {
+    const rates = [0.8, 0.9, 1, 1.1, 1.25, 1.5];
+    const now = prefs.get('speechRate', 1);
+    const next = rates[(rates.indexOf(now) + 1) % rates.length] ?? 1;
+    prefs.set('speechRate', next);
+    this.rateBtn.textContent = `${next}×`;
+    this.readAloud?.setRate(next);
+  }
+
+  async showVoices() {
+    await voicesReady();
+    const voices = voicesFor(this.speechLang);
+    const current = this.readAloud?.voice?.voiceURI;
+    const good = voices.some((v) => voiceQuality(v) >= 2);
+    const tip = h('p', { class: 'hint ra-tip' },
+      good ? 'For the most natural sound, pick a Premium or Enhanced voice. ' : 'Only basic voices are installed for this language. ',
+      'You can download better ones on this device: Settings → Accessibility → Spoken Content (on newer iOS: Read & Speak) → Voices. Premium voices sound the most human. Then reopen Margins.');
+    const list = h('div', { class: 'ra-voices' }, voices.map((v) => {
+      const { name, tag } = voiceLabel(v);
+      return h('button', {
+        class: `toc-item${v.voiceURI === current ? ' current' : ''}`,
+        onclick: () => {
+          prefs.set(this.voiceKey, v.voiceURI);
+          list.querySelectorAll('.toc-item').forEach((b) => b.classList.remove('current'));
+          list.querySelectorAll('.toc-item .icon').forEach((i) => i.remove());
+          const btn = list.children[voices.indexOf(v)];
+          btn.classList.add('current');
+          btn.append(icon('check'));
+          this.updateVoiceName();
+          if (this.readAloud?.playing) this.readAloud.restartSentence();
+          else {
+            const u = new SpeechSynthesisUtterance(this.book.title || name);
+            u.voice = v; u.lang = v.lang; u.rate = prefs.get('speechRate', 1);
+            speechSynthesis.cancel(); speechSynthesis.speak(u);
+          }
+        },
+      },
+      h('span', { class: 'ra-voice-row' },
+        h('span', {}, name),
+        h('span', { class: 'ra-voice-meta' }, [tag, v.lang].filter(Boolean).join(' · '))),
+      v.voiceURI === current ? icon('check') : null);
+    }));
+    openSheet({
+      title: 'Voice',
+      subtitle: 'Tap a voice to hear it',
+      body: h('div', {}, good ? null : tip, voices.length ? list : h('p', { class: 'hint' }, 'No voices found on this device.'), good ? tip : null),
+    });
+  }
+
   close() {
+    this.readAloud?.destroy();
     clearTimeout(this.saveTimer);
     clearTimeout(this.hideTimer);
     document.removeEventListener('keydown', this.onKey);
@@ -460,6 +579,7 @@ async function deleteHighlight(hl, owner, list) {
     if (i >= 0) arr.splice(i, 1);
   }
   owner?.reader?.unpaint(hl);
+  owner?.readAloud?.refresh();
 }
 
 function editHighlight(hl, owner, { list, onChange } = {}) {
