@@ -2,7 +2,7 @@
 // and works without internet (like downloading a film before a flight).
 // The list below is every file the app needs.
 
-const CACHE = 'margins-fitwidth-1';
+const CACHE = 'margins-fitwidth-2';
 const ASSETS = [
   "./",
   "app.css",
@@ -44,7 +44,10 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // 'reload' fetches fresh copies from the server, never the browser's short-term memory
+  event.waitUntil(caches.open(CACHE)
+    .then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
