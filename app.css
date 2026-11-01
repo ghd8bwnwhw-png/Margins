@@ -23,6 +23,12 @@
   --dot-blue: #0a84ff;
   --dot-pink: #ff3787;
 
+  /* Pencil colours (on paper-coloured pages; PDFs are always white) */
+  --pen-ink: #1f1d1a;
+  --pen-red: #d1242f;
+  --pen-blue: #0f62d6;
+  --pen-green: #18794e;
+
   --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
   --serif: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
 
@@ -50,6 +56,10 @@
     --shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
     --hl-yellow: rgba(255, 204, 0, 0.32);
+    --pen-ink: #ece7dd;
+    --pen-red: #ff7b72;
+    --pen-blue: #79b8ff;
+    --pen-green: #7ee2a8;
   }
 }
 
@@ -413,6 +423,71 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .hl-sep { width: 1px; height: 24px; background: var(--line); }
 .hl-note { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--accent); padding: 4px 6px; }
 .hl-note .icon { width: 19px; height: 19px; }
+
+/* ---------- Handwriting (Apple Pencil) ---------- */
+.ink-layer { position: absolute; left: 0; top: 0; width: 100%; overflow: visible; pointer-events: none; }
+.pdf-ink { height: 100%; z-index: 3; }
+.ink-stroke { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.ink-stroke.pen-ink { stroke: var(--pen-ink); }
+.ink-stroke.pen-red { stroke: var(--pen-red); }
+.ink-stroke.pen-blue { stroke: var(--pen-blue); }
+.ink-stroke.pen-green { stroke: var(--pen-green); }
+/* PDF pages are white paper whatever the theme */
+.pdf-page .ink-stroke.pen-ink { stroke: #1f1d1a; }
+.pdf-page .ink-stroke.pen-red { stroke: #d1242f; }
+.pdf-page .ink-stroke.pen-blue { stroke: #0f62d6; }
+.pdf-page .ink-stroke.pen-green { stroke: #18794e; }
+
+/* While writing: the sheet sits on top of the page so the Pencil can't select text */
+.pen-mode .epub-ink { pointer-events: auto; cursor: crosshair; }
+.pen-mode .textLayer { pointer-events: none; }
+.pen-mode .pdf-page { cursor: crosshair; }
+.pen-mode, .pen-mode * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.reader-view.pen-on .hl-bar { display: none; }
+
+.pen-bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(64px + var(--safe-bottom));
+  transform: translateX(-50%);
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  max-width: calc(100vw - 16px);
+}
+.pen-bar[hidden] { display: none; }
+.reader-view.ra-open .pen-bar { bottom: calc(132px + var(--safe-bottom)); }
+.pen-dots { display: flex; gap: 8px; margin-right: 2px; }
+.pen-dot { width: 28px; height: 28px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); flex: none; }
+.pen-dot[aria-checked="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.pen-bg-ink { background: var(--pen-ink); }
+.pen-bg-red { background: var(--pen-red); }
+.pen-bg-blue { background: var(--pen-blue); }
+.pen-bg-green { background: var(--pen-green); }
+.pen-bar .icon-btn { width: 40px; height: 40px; }
+.pen-bar .icon-btn.active { background: var(--accent-soft); color: var(--accent); }
+.pen-done { font-weight: 600; color: var(--on-accent); background: var(--accent); padding: 8px 14px; border-radius: 999px; margin-left: 2px; }
+@media (max-width: 420px) {
+  .pen-bar { gap: 2px; padding: 5px 6px 5px 10px; }
+  .pen-dots { gap: 6px; }
+  .pen-dot { width: 26px; height: 26px; }
+  .pen-bar .icon-btn { width: 36px; height: 36px; }
+  .pen-done { padding: 7px 11px; }
+}
+
+.q-ink { --q: var(--accent); }
+.ink-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; justify-content: center; }
+.ink-card.small { justify-content: flex-start; padding: 6px 8px; align-self: flex-start; max-width: 100%; }
+.ink-preview { display: block; max-width: 100%; height: auto; }
+.ink-near { font-size: 14px; color: var(--muted); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ink-near span { font-family: var(--serif); color: var(--ink); }
+.editor .btn-secondary { align-self: flex-start; }
 
 /* Read-aloud player */
 .ra-bar {

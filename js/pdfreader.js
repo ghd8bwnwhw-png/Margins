@@ -7,6 +7,7 @@
 import { splitSentences } from './speech.js';
 import * as pdfjsLib from '../vendor/pdfjs/pdf.mjs';
 import { h } from './ui.js';
+import { inkSurface, inkBounds, inkFocus } from './ink.js';
 
 const BASE = new URL('../vendor/pdfjs/', import.meta.url).href;
 pdfjsLib.GlobalWorkerOptions.workerSrc = BASE + 'pdf.worker.mjs';
@@ -120,7 +121,7 @@ export class PDFReader {
       const div = h('div', { class: 'pdf-page', 'data-index': i });
       div.addEventListener('click', (e) => this.onPageClick(e, i));
       this.pagesEl.append(div);
-      return { div, state: 'empty', token: 0, scale: 1, hlLayer: null, canvas: null, task: null, textLayer: null };
+      return { div, state: 'empty', token: 0, scale: 1, hlLayer: null, inkLayer: null, canvas: null, task: null, textLayer: null };
     });
     this.layout();
     this.observe();
@@ -191,10 +192,13 @@ export class PDFReader {
       canvas.height = Math.floor(viewport.height * dpr);
       const hlLayer = h('div', { class: 'pdf-hl-layer' });
       const textLayer = h('div', { class: 'textLayer' });
-      p.div.replaceChildren(canvas, hlLayer, textLayer);
+      const inkLayer = inkSurface('ink-layer pdf-ink');
+      p.div.replaceChildren(canvas, hlLayer, textLayer, inkLayer);
       p.canvas = canvas;
       p.hlLayer = hlLayer;
+      p.inkLayer = inkLayer;
       this.drawHighlights(i);
+      this.ink?.renderSurface(`p${i}`);
 
       p.task = page.render({
         canvasContext: canvas.getContext('2d'),
@@ -222,7 +226,7 @@ export class PDFReader {
     try { p.textLayer?.cancel(); } catch { /* already done */ }
     if (p.canvas) { p.canvas.width = 0; p.canvas.height = 0; }
     p.div.replaceChildren();
-    p.canvas = p.hlLayer = p.task = p.textLayer = null;
+    p.canvas = p.hlLayer = p.inkLayer = p.task = p.textLayer = null;
     p.state = 'empty';
   }
 
@@ -231,6 +235,7 @@ export class PDFReader {
     if (!p?.hlLayer) return;
     const boxes = [];
     for (const hl of this.highlights) {
+      if (hl.ink) continue;
       for (const r of hl.rects || []) {
         if (r.p !== i) continue;
         boxes.push(h('div', {
@@ -298,6 +303,7 @@ export class PDFReader {
   repaint(hl) { this.paint(hl); }
 
   jumpTo(hl) {
+    if (hl.ink) { this.inkJump(hl); return; }
     const r = hl.rects?.[0];
     const p = this.pages[r ? r.p : hl.page];
     if (!p) return;
@@ -312,9 +318,64 @@ export class PDFReader {
     const x = (e.clientX - pr.left) / pr.width;
     const y = (e.clientY - pr.top) / pr.height;
     const pad = 0.004;
-    const hit = this.highlights.find((hl) => (hl.rects || []).some((r) =>
+    const hit = this.highlights.find((hl) => !hl.ink && (hl.rects || []).some((r) =>
       r.p === i && x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad));
     if (hit) this.cb.onTap?.(hit.id);
+  }
+
+  // ---- Handwriting (see ink.js) ----
+  // Strokes are measured in fractions of the page's width, like the
+  // highlights, so they sit in the same place at every zoom level.
+
+  inkSurfaceIds() { return this.pages.map((p, i) => (p.inkLayer ? `p${i}` : null)).filter(Boolean); }
+  inkSurfaceEl(id) { return this.pages[Number(String(id).slice(1))]?.inkLayer || null; }
+
+  inkSurfaceAt(x, y) {
+    for (let i = 0; i < this.pages.length; i++) {
+      const p = this.pages[i];
+      if (!p.inkLayer) continue;
+      const r = p.div.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { id: `p${i}`, el: p.inkLayer };
+    }
+    return null;
+  }
+
+  inkNewGroup(id) {
+    const page = Number(String(id).slice(1));
+    return this.pages[page] ? { kind: 'pdf', page } : null;
+  }
+
+  inkFrame(g) {
+    const p = this.pages[g.page];
+    if (!p?.inkLayer) return null;
+    return { surfaceId: `p${g.page}`, ox: 0, oy: 0, scale: p.div.offsetWidth, prec: 10000 };
+  }
+
+  /** Words of the page under or next to the drawing, and its height on the page. */
+  inkFinish(g) {
+    const p = this.pages[g.page];
+    if (!p) return;
+    const b = inkBounds(g);
+    const s = this.sizes[g.page];
+    g.y = Math.round(b.y1 * (s.w / s.h) * 100000) / 100000; // for sorting with highlights
+    const box = p.div.getBoundingClientRect();
+    const w = box.width;
+    const f = inkFocus(g).box;
+    const area = { l: box.left + f.x1 * w - 8, r: box.left + f.x2 * w + 8, t: box.top + f.y1 * w - 8, b: box.top + f.y2 * w + 8 };
+    const words = [];
+    for (const span of p.div.querySelectorAll('.textLayer span:not(.markedContent)')) {
+      const r = span.getBoundingClientRect();
+      if (r.right > area.l && r.left < area.r && r.bottom > area.t && r.top < area.b && span.textContent.trim()) words.push(span.textContent);
+    }
+    const text = words.join(' ').replace(/\s+/g, ' ').trim();
+    g.text = text.length > 220 ? `${text.slice(0, 217).trim()}…` : text;
+  }
+
+  inkJump(g) {
+    const p = this.pages[g.page];
+    if (!p) return;
+    const y = inkBounds(g).y1 * p.div.offsetWidth;
+    this.scroller.scrollTo({ top: Math.max(0, p.div.offsetTop + y - this.scroller.clientHeight / 3), behavior: 'smooth' });
   }
 
   // ---- Position ----

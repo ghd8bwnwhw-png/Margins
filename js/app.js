@@ -7,9 +7,10 @@ import { openEPUB } from './epub.js';
 import { EPUBReader } from './epubreader.js';
 import { exportText, shareText, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
 import { ReadAloud, unlockSpeech, speechSupported, voicesFor, voicesReady, voiceLabel, voiceQuality } from './speech.js';
+import { InkController, inkPreview, PEN_COLORS, PEN_LABELS } from './ink.js';
 import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 const COLORS = ['yellow', 'green', 'blue', 'pink'];
 
 const app = document.getElementById('app');
@@ -33,6 +34,8 @@ const isStandalone = () => window.matchMedia('(display-mode: standalone)').match
 
 let library = [];
 let counts = new Map();
+let inkCounts = new Map();
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 let session = null;
 
 // ======================================================================
@@ -42,7 +45,11 @@ let session = null;
 async function refreshLibrary() {
   library = await db.getAll('books');
   counts = new Map();
-  for (const hl of await db.getAll('highlights')) counts.set(hl.bookId, (counts.get(hl.bookId) || 0) + 1);
+  inkCounts = new Map();
+  for (const hl of await db.getAll('highlights')) {
+    const map = hl.ink ? inkCounts : counts;
+    map.set(hl.bookId, (map.get(hl.bookId) || 0) + 1);
+  }
   if (!session) renderLibrary();
 }
 
@@ -100,7 +107,8 @@ function cover(book) {
 function bookCard(book) {
   const count = counts.get(book.id) || 0;
   const pct = Math.round((book.progress || 0) * 100);
-  const meta = [book.format.toUpperCase(), pct ? `${pct}%` : 'New', count ? `${count} highlight${count === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+  const inks = inkCounts.get(book.id) || 0;
+  const meta = [book.format.toUpperCase(), pct ? `${pct}%` : 'New', count ? plural(count, 'highlight') : null, inks ? plural(inks, 'drawing') : null].filter(Boolean).join(' · ');
   return h('article', { class: 'book' },
     h('button', { class: 'book-open', onclick: () => openBook(book.id), 'aria-label': `Open ${book.title}` },
       cover(book),
@@ -272,6 +280,7 @@ class ReaderSession {
     this.body = h('div', { class: 'reader-body' });
     this.bar = this.buildHighlightBar();
     this.player = this.buildPlayer();
+    this.penBar = this.buildPenBar();
 
     this.view = h('div', { class: `reader-view ${epub ? 'is-epub' : 'is-pdf'}` },
       h('header', { class: 'topbar reader-top' },
@@ -281,6 +290,7 @@ class ReaderSession {
           epub ? iconButton('list', 'Contents', () => this.showContents()) : null,
           epub ? iconButton('type', 'Text size & typeface', () => this.showTypography()) : null,
           speechSupported() ? (this.speakBtn = iconButton('speaker', 'Read aloud', () => this.togglePlayer())) : null,
+          this.penBtn,
           iconButton('highlighter', 'Highlights & Notes', () => showHighlights(this.book, this.highlights, this)))),
       this.body,
       this.player,
@@ -288,11 +298,14 @@ class ReaderSession {
         epub ? this.prevBtn : this.zoomOutBtn,
         this.label,
         epub ? this.nextBtn : this.zoomInBtn),
-      this.bar);
+      this.bar,
+      this.penBar);
     app.replaceChildren(this.view);
 
     this.onKey = (e) => {
       if (document.querySelector('.sheet.open') || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+      if (this.ink?.active && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); this.ink.undo(); return; }
+      if (this.ink?.active && e.key === 'Escape') { this.togglePen(false); return; }
       if (e.key === 'ArrowRight' && epub) this.reader?.go(this.reader.index + 1);
       else if (e.key === 'ArrowLeft' && epub) this.reader?.go(this.reader.index - 1);
       else if (e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); this.reader?.pageBy(e.shiftKey ? -1 : 1); }
@@ -331,6 +344,95 @@ class ReaderSession {
       this.reader = new PDFReader({ container: this.body, blob: this.blob, highlights: this.highlights, callbacks });
     }
     await this.reader.open(this.book.position || {});
+    this.ink = new InkController({
+      reader: this.reader,
+      scroller: this.reader.scroller,
+      groups: this.highlights,
+      bookId: this.book.id,
+      onSave: (g) => db.put('highlights', g),
+      onDelete: (g) => deleteHighlight(g, this),
+    });
+    this.ink.color = prefs.get('penColor', 'ink');
+    this.ink.finger = prefs.get('penFinger', /iPhone|iPod|Android/.test(navigator.userAgent));
+    this.updatePenBar();
+    this.ink.renderAll();
+    this.penBtn.disabled = false;
+  }
+
+  // ---- Handwriting ----
+
+  buildPenBar() {
+    this.penBtn = iconButton('pencil', 'Write with Apple Pencil', () => this.togglePen());
+    this.penBtn.disabled = true;
+    this.penDots = PEN_COLORS.map((c) => h('button', {
+      class: `pen-dot pen-bg-${c}`,
+      role: 'radio',
+      'aria-label': `${PEN_LABELS[c]} pen`,
+      onclick: () => this.setPen(c),
+    }));
+    this.eraserBtn = iconButton('eraser', 'Eraser', () => this.setEraser());
+    this.fingerBtn = 'ontouchstart' in window ? iconButton('hand', 'Draw with your finger too', () => this.toggleFinger()) : null;
+    const bar = h('div', { class: 'pen-bar', role: 'toolbar', 'aria-label': 'Handwriting tools', hidden: true },
+      h('div', { class: 'pen-dots', role: 'radiogroup', 'aria-label': 'Pen colour' }, this.penDots),
+      h('span', { class: 'hl-sep', 'aria-hidden': 'true' }),
+      this.eraserBtn,
+      iconButton('undo', 'Undo', () => { if (!this.ink?.undo()) toast('Nothing to undo'); }),
+      this.fingerBtn,
+      h('button', { class: 'pen-done', onclick: () => this.togglePen(false) }, 'Done'));
+    bar.addEventListener('mousedown', (e) => e.preventDefault());
+    return bar;
+  }
+
+  updatePenBar() {
+    if (!this.ink) return;
+    const pen = this.ink.tool === 'pen';
+    this.penDots.forEach((b, i) => b.setAttribute('aria-checked', String(pen && PEN_COLORS[i] === this.ink.color)));
+    this.eraserBtn.classList.toggle('active', !pen);
+    this.eraserBtn.setAttribute('aria-pressed', String(!pen));
+    if (this.fingerBtn) {
+      this.fingerBtn.classList.toggle('active', this.ink.finger);
+      this.fingerBtn.setAttribute('aria-pressed', String(this.ink.finger));
+    }
+  }
+
+  setPen(color) {
+    this.ink.setTool('pen');
+    this.ink.color = color;
+    prefs.set('penColor', color);
+    this.updatePenBar();
+  }
+
+  setEraser() {
+    this.ink.setTool(this.ink.tool === 'eraser' ? 'pen' : 'eraser');
+    this.updatePenBar();
+  }
+
+  toggleFinger() {
+    this.ink.finger = !this.ink.finger;
+    prefs.set('penFinger', this.ink.finger);
+    this.updatePenBar();
+    toast(this.ink.finger ? 'Your finger draws too — scroll with two fingers' : 'Only Apple Pencil draws — your finger scrolls');
+  }
+
+  togglePen(force) {
+    if (!this.ink) return;
+    const on = force ?? !this.ink.active;
+    this.ink.setActive(on);
+    if (on) {
+      this.ink.setTool('pen');
+      document.getSelection()?.removeAllRanges();
+      this.reader?.doc?.getSelection?.()?.removeAllRanges();
+      this.bar.classList.remove('show');
+      if (!prefs.get('penTipSeen', false)) {
+        prefs.set('penTipSeen', true);
+        toast(this.ink.finger ? 'Draw with your finger. Scroll with two fingers.' : 'Write with Apple Pencil. Your finger still scrolls the page.');
+      }
+    }
+    this.view.classList.toggle('pen-on', on);
+    this.penBar.hidden = !on;
+    this.penBtn.classList.toggle('active', on);
+    this.penBtn.setAttribute('aria-pressed', String(on));
+    this.updatePenBar();
   }
 
   buildHighlightBar() {
@@ -559,6 +661,7 @@ class ReaderSession {
   }
 
   close() {
+    this.ink?.destroy();
     this.readAloud?.destroy();
     clearTimeout(this.saveTimer);
     clearTimeout(this.hideTimer);
@@ -587,6 +690,7 @@ async function deleteHighlight(hl, owner, list) {
 }
 
 function editHighlight(hl, owner, { list, onChange } = {}) {
+  if (hl.ink) { showInk(hl, owner, { list, onChange }); return; }
   const quote = h('blockquote', { class: `editor-quote q-${hl.color}` }, hl.text);
   const note = h('textarea', { class: 'note-input', placeholder: 'Add your thoughts…', rows: '5', 'aria-label': 'Note' });
   note.value = hl.note || '';
@@ -653,6 +757,48 @@ function editHighlight(hl, owner, { list, onChange } = {}) {
   if (!hl.note && !matchMedia('(pointer: coarse)').matches) setTimeout(() => note.focus(), 320);
 }
 
+/** A handwritten note: its picture, a place to type a note, and Delete. */
+function showInk(g, owner, { list, onChange } = {}) {
+  const note = h('textarea', { class: 'note-input', placeholder: 'Add a typed note (optional)…', rows: '3', 'aria-label': 'Note' });
+  note.value = g.note || '';
+  let saved = g.note || '';
+  let timer;
+  const save = () => {
+    clearTimeout(timer);
+    if (g.deleted || note.value === saved) return;
+    g.note = saved = note.value;
+    g.updatedAt = Date.now();
+    db.put('highlights', g);
+    onChange?.();
+  };
+  note.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(save, 400); });
+  const sheet = openSheet({
+    title: 'Handwritten note',
+    subtitle: locationLabel(g),
+    closeLabel: 'Done',
+    body: h('div', { class: 'editor' },
+      h('div', { class: 'ink-card' }, inkPreview(g, { maxHeight: 220 })),
+      g.text ? h('p', { class: 'ink-near' }, 'Next to: ', h('span', {}, `“${g.text}”`)) : null,
+      owner ? h('button', { class: 'btn-secondary', onclick: () => { sheet.close(); owner.reader.jumpTo(g); } }, icon('forward'), h('span', {}, 'Show on the page')) : null,
+      h('label', { class: 'field-label', for: 'note-field' }, 'Note'),
+      note,
+      h('button', {
+        class: 'btn-danger-text',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: 'Delete this handwritten note?', message: 'The drawing will be removed from the page.', confirm: 'Delete', destructive: true });
+          if (!ok) return;
+          await deleteHighlight(g, owner, list);
+          owner?.ink?.renderAll();
+          sheet.close();
+          onChange?.();
+          toast('Handwritten note deleted');
+        },
+      }, icon('trash'), h('span', {}, 'Delete handwritten note'))),
+    onClose: save,
+  });
+  note.id = 'note-field';
+}
+
 function showHighlights(book, list, owner) {
   const listEl = h('div', { class: 'hl-list' });
   const count = h('span', { class: 'hl-count' });
@@ -670,13 +816,14 @@ function showHighlights(book, list, owner) {
 
   const render = () => {
     const items = sortHighlights(list);
-    count.textContent = items.length ? `${items.length} highlight${items.length === 1 ? '' : 's'}` : '';
+    const inks = items.filter((x) => x.ink).length;
+    count.textContent = [items.length - inks ? plural(items.length - inks, 'highlight') : '', inks ? plural(inks, 'handwritten note') : ''].filter(Boolean).join(' · ');
     copyBtn.disabled = exportBtn.disabled = !items.length;
     if (!items.length) {
       listEl.replaceChildren(h('div', { class: 'empty-small' },
         icon('highlighter'),
         h('p', {}, 'No highlights yet'),
-        h('p', { class: 'muted' }, 'Select text while reading, then tap a colour.')));
+        h('p', { class: 'muted' }, 'Select text while reading, then tap a colour — or tap the pencil to write on the page.')));
       return;
     }
     listEl.replaceChildren(...items.map((hl) => h('div', { class: `hl-item q-${hl.color}` },
@@ -687,10 +834,11 @@ function showHighlights(book, list, owner) {
           else editHighlight(hl, null, { list, onChange: render });
         },
       },
-        h('div', { class: 'hl-item-loc' }, locationLabel(hl)),
-        h('div', { class: 'hl-item-text' }, hl.text),
+        h('div', { class: 'hl-item-loc' }, hl.ink ? `${locationLabel(hl)} · Handwritten` : locationLabel(hl)),
+        hl.ink ? h('div', { class: 'ink-card small' }, inkPreview(hl)) : h('div', { class: 'hl-item-text' }, hl.text),
+        hl.ink && hl.text ? h('div', { class: 'ink-near' }, 'Next to: ', h('span', {}, `“${hl.text}”`)) : null,
         hl.note ? h('div', { class: 'hl-item-note' }, icon('note'), h('span', {}, hl.note)) : null),
-      iconButton('note', 'Edit note', () => editHighlight(hl, owner, { list, onChange: render }), 'hl-item-edit'))));
+      iconButton(hl.ink ? 'more' : 'note', hl.ink ? 'Options' : 'Edit note', () => editHighlight(hl, owner, { list, onChange: render }), 'hl-item-edit'))));
   };
 
   const sheet = openSheet({

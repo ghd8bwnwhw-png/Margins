@@ -8,7 +8,7 @@ export function locationLabel(hl) {
 export function sortHighlights(list) {
   return [...list].sort((a, b) => {
     if (a.kind === 'pdf' && b.kind === 'pdf') {
-      return a.page - b.page || (a.rects?.[0]?.y ?? 0) - (b.rects?.[0]?.y ?? 0) || (a.rects?.[0]?.x ?? 0) - (b.rects?.[0]?.x ?? 0);
+      return a.page - b.page || (a.rects?.[0]?.y ?? a.y ?? 0) - (b.rects?.[0]?.y ?? b.y ?? 0) || (a.rects?.[0]?.x ?? 0) - (b.rects?.[0]?.x ?? 0);
     }
     return (a.chapter ?? 0) - (b.chapter ?? 0) || (a.start ?? 0) - (b.start ?? 0);
   });
@@ -21,7 +21,12 @@ export function exportText(book, highlights) {
   if (book.author) lines.push(`by ${book.author}`);
   lines.push(`Highlights & notes · exported ${date}`);
   for (const hl of sortHighlights(highlights)) {
-    lines.push('', '———', locationLabel(hl), `“${hl.text}”`);
+    if (hl.ink) {
+      // A drawing can't travel as text: say where it is and what it's next to
+      lines.push('', '———', locationLabel(hl), hl.text ? `✎ Handwritten note next to: “${hl.text}”` : '✎ Handwritten note');
+    } else {
+      lines.push('', '———', locationLabel(hl), `“${hl.text}”`);
+    }
     const note = (hl.note || '').trim();
     if (note) lines.push(`Note: ${note}`);
   }

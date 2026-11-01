@@ -24,6 +24,10 @@ const ICONS = {
   pause: '<rect x="6.5" y="5.5" width="3.8" height="13" rx="1" fill="currentColor" stroke="none"/><rect x="13.7" y="5.5" width="3.8" height="13" rx="1" fill="currentColor" stroke="none"/>',
   skipBack: '<path d="M18 6.5v11l-8-5.5z"/><path d="M6.5 6v12"/>',
   skipFwd: '<path d="M6 6.5v11l8-5.5z"/><path d="M17.5 6v12"/>',
+  pencil: '<path d="M15.2 4.8a2.1 2.1 0 0 1 3 3L8.4 17.6 4.5 19.5l1.9-3.9z"/><path d="M13.5 6.5l3 3"/><path d="M14 20h6"/>',
+  eraser: '<path d="M8.5 19.5 4 15a1.8 1.8 0 0 1 0-2.5l8-8a1.8 1.8 0 0 1 2.5 0l5 5a1.8 1.8 0 0 1 0 2.5l-7.5 7.5z"/><path d="M8.5 19.5H20M9 8l7 7"/>',
+  undo: '<path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/>',
+  hand: '<path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V12M11 11.5v-6a1.5 1.5 0 0 1 3 0v6M14 11.5v-4a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-.6a5 5 0 0 1-4-2l-2.6-3.6a1.5 1.5 0 0 1 2.3-1.9L8 15"/>',
   sync: '<path d="M19.5 10A7.5 7.5 0 0 0 6.2 6.6L4.5 8.3"/><path d="M4.5 4.5v3.8h3.8"/><path d="M4.5 14a7.5 7.5 0 0 0 13.3 3.4l1.7-1.7"/><path d="M19.5 19.5v-3.8h-3.8"/>',
 };
 

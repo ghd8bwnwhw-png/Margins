@@ -5,6 +5,7 @@ import { h, icon } from './ui.js';
 import * as HL from './highlighter.js';
 import { resolvePath, dirOf } from './epub.js';
 import { splitSentences } from './speech.js';
+import { inkSurface, inkBounds, inkFocus } from './ink.js';
 
 // Elements that hold readable text, read one after another
 const BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,dt,dd,figcaption,caption,td,th,pre,div,section,article,aside';
@@ -62,7 +63,9 @@ export class EPUBReader {
     this.nextButton = h('button', { class: 'next-chapter', onclick: () => this.go(this.index + 1) },
       h('span', {}, 'Next chapter'), icon('forward'));
     this.endNote = h('div', { class: 'end-of-book' }, 'The end');
-    this.scroller = h('div', { class: 'epub-scroller' }, this.frame, h('div', { class: 'chapter-end' }, this.nextButton, this.endNote));
+    // A clear sheet over the page for handwriting (see ink.js)
+    this.inkSvg = inkSurface('ink-layer epub-ink');
+    this.scroller = h('div', { class: 'epub-scroller' }, this.frame, this.inkSvg, h('div', { class: 'chapter-end' }, this.nextButton, this.endNote));
     container.append(this.scroller);
     // Once the reader touches the page, stop re-applying the saved position
     for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
@@ -83,13 +86,15 @@ export class EPUBReader {
     await this.go(index, { fraction: position.fraction ?? 0 });
   }
 
-  async go(index, { fraction = 0, focusId = null, fragment = null } = {}) {
+  async go(index, { fraction = 0, focusId = null, fragment = null, focusInk = null } = {}) {
     if (index < 0 || index >= this.chapters.length) return;
     const token = ++this.loadToken;
     this.index = index;
     this.saved = null;
     this.cb.onSelection?.(false);
     this.cb.onChapter?.(index, this.chapters[index].title);
+    this.inkSvg.replaceChildren();
+    if (this.ink) this.ink.current = null;
 
     const url = await this.epub.chapterURL(index);
     if (token !== this.loadToken) return;
@@ -104,7 +109,7 @@ export class EPUBReader {
     this.doc = doc;
     if (!doc?.body) return;
     this.prepare(doc);
-    for (const hl of this.highlights) if (hl.chapter === index) HL.paint(doc, hl);
+    for (const hl of this.highlights) if (hl.chapter === index && !hl.ink) HL.paint(doc, hl);
 
     const last = index === this.chapters.length - 1;
     this.nextButton.hidden = last;
@@ -112,7 +117,7 @@ export class EPUBReader {
 
     this.fit();
     const position = () => {
-      if (!(focusId && this.scrollToMark(focusId)) && !(fragment && this.scrollToId(fragment))) {
+      if (!(focusId && this.scrollToMark(focusId)) && !(focusInk && this.scrollToInk(focusInk)) && !(fragment && this.scrollToId(fragment))) {
         const max = this.scroller.scrollHeight - this.scroller.clientHeight;
         this.scroller.scrollTop = Math.max(0, fraction) * max;
       }
@@ -158,6 +163,9 @@ export class EPUBReader {
     if (!this.doc?.body) return;
     const height = Math.ceil(this.doc.body.getBoundingClientRect().bottom);
     this.frame.style.height = `${Math.max(height, 120)}px`;
+    this.inkSvg.style.top = `${this.frame.offsetTop}px`;
+    this.inkSvg.style.height = `${Math.max(height, 120)}px`;
+    this.ink?.renderSurface('ch');
     this.autoPosition?.();
   }
 
@@ -210,11 +218,16 @@ export class EPUBReader {
     };
   }
 
-  paint(hl) { if (this.doc && hl.chapter === this.index) HL.paint(this.doc, hl); }
-  unpaint(hl) { if (this.doc) HL.unpaint(this.doc, hl.id); }
-  repaint(hl) { if (this.doc) HL.recolor(this.doc, hl.id, hl.color); }
+  paint(hl) { if (this.doc && hl.chapter === this.index && !hl.ink) HL.paint(this.doc, hl); }
+  unpaint(hl) { if (this.doc && !hl.ink) HL.unpaint(this.doc, hl.id); }
+  repaint(hl) { if (this.doc && !hl.ink) HL.recolor(this.doc, hl.id, hl.color); }
 
   async jumpTo(hl) {
+    if (hl.ink) {
+      if (hl.chapter === this.index) this.scrollToInk(hl, true);
+      else await this.go(hl.chapter, { focusInk: hl });
+      return;
+    }
     if (hl.chapter === this.index) this.scrollToMark(hl.id, true);
     else await this.go(hl.chapter, { focusId: hl.id });
   }
@@ -366,6 +379,109 @@ export class EPUBReader {
     this.markedBlock?.classList.remove('read-aloud-block');
     this.markedBlock = null;
   }
+
+  // ---- Handwriting (see ink.js) ----
+  // A note is pinned to one letter of the chapter ("character 1,204").
+  // Its strokes are measured from that letter in units of the text size,
+  // so the note moves and grows with the text when the size changes.
+
+  inkSurfaceIds() { return this.doc ? ['ch'] : []; }
+  inkSurfaceEl(id) { return id === 'ch' && this.doc ? this.inkSvg : null; }
+
+  inkSurfaceAt(x, y) {
+    if (!this.doc?.body) return null;
+    const r = this.inkSvg.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    return { id: 'ch', el: this.inkSvg };
+  }
+
+  /** The nearest letter (not a space) to a point on the page. */
+  letterNear(x, y) {
+    const doc = this.doc;
+    let node = null;
+    let offset = 0;
+    const caret = doc.caretRangeFromPoint?.(x, y);
+    if (caret) { node = caret.startContainer; offset = caret.startOffset; } else {
+      const pos = doc.caretPositionFromPoint?.(x, y);
+      if (pos) { node = pos.offsetNode; offset = pos.offset; }
+    }
+    const nodes = HL.textNodes(doc);
+    const text = nodes.map((n) => n.data).join('');
+    let at = 0;
+    if (node && doc.body.contains(node)) {
+      try { at = HL.offsetOf(doc, node, offset); } catch { at = 0; }
+    }
+    at = Math.min(Math.max(at, 0), Math.max(text.length - 1, 0));
+    const solid = (i) => i >= 0 && i < text.length && /\S/.test(text[i]);
+    for (let d = 0; d < 400; d++) {
+      if (solid(at + d)) return at + d;
+      if (solid(at - d)) return at - d;
+    }
+    return text.search(/\S/);
+  }
+
+  inkNewGroup(id, x, y) {
+    if (id !== 'ch' || !this.doc?.body) return null;
+    const at = this.letterNear(x, y);
+    if (at < 0) return null;
+    return { kind: 'epub', chapter: this.index, chapterTitle: this.chapters[this.index].title, start: at, end: at + 1 };
+  }
+
+  inkFrame(g) {
+    if (g.chapter !== this.index || !this.doc?.body) return null;
+    const range = HL.rangeFromOffsets(this.doc, g.start, g.end);
+    if (!range) return null;
+    const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+    const em = parseFloat(this.frame.contentWindow.getComputedStyle(this.doc.body).fontSize) || 16;
+    return { surfaceId: 'ch', ox: rect.left, oy: rect.top, scale: em, prec: 100 };
+  }
+
+  /** The words the note circles or sits next to, for the notes list. */
+  inkFinish(g) {
+    const range = this.doc && HL.rangeFromOffsets(this.doc, g.start, g.end);
+    if (!range) return;
+    // Sentences inside the drawing's outline (e.g. a circled passage)
+    const f = this.inkFrame(g);
+    const focus = inkFocus(g);
+    if (f && focus.circled) {
+      const b = focus.box;
+      const box = { l: f.ox + b.x1 * f.scale, r: f.ox + b.x2 * f.scale, t: f.oy + b.y1 * f.scale, b: f.oy + b.y2 * f.scale };
+      const inside = this.speechUnits().filter(({ range: r }) => {
+        const q = r.getBoundingClientRect();
+        const cx = (q.left + q.right) / 2;
+        const cy = (q.top + q.bottom) / 2;
+        return cx > box.l && cx < box.r && cy > box.t && cy < box.b;
+      }).map((u) => u.text);
+      if (inside.length) {
+        const text = inside.join(' ');
+        g.text = text.length > 220 ? `${text.slice(0, 217).trim()}…` : text;
+        return;
+      }
+    }
+    const node = range.startContainer;
+    const block = node.parentElement?.closest(BLOCKS) || this.doc.body;
+    const before = this.doc.createRange();
+    before.setStart(block, 0);
+    before.setEnd(node, range.startOffset);
+    const pos = before.toString().length;
+    const text = block.textContent || '';
+    let sentence = text;
+    for (const [a, b] of splitSentences(text, this.language)) {
+      if (pos >= a && pos < b) { sentence = text.slice(a, b); break; }
+    }
+    sentence = sentence.replace(/\s+/g, ' ').trim();
+    g.text = sentence.length > 220 ? `${sentence.slice(0, 217).trim()}…` : sentence;
+  }
+
+  scrollToInk(g, smooth = false) {
+    const f = this.inkFrame(g);
+    if (!f) return false;
+    const top = f.oy + inkBounds(g).y1 * f.scale;
+    this.scroller.scrollTo({ top: Math.max(0, this.frame.offsetTop + top - this.scroller.clientHeight / 3), behavior: smooth ? 'smooth' : 'auto' });
+    return true;
+  }
+
+  inkJump(g) { return this.jumpTo(g); }
 
   // ---- Position ----
 

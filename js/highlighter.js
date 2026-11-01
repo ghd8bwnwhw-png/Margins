@@ -7,7 +7,7 @@ const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 const BLOCKS = new Set(['HTML', 'BODY', 'DIV', 'SECTION', 'ARTICLE', 'UL', 'OL', 'DL', 'TABLE', 'THEAD',
   'TBODY', 'TFOOT', 'TR', 'BLOCKQUOTE', 'FIGURE', 'NAV', 'ASIDE', 'HEADER', 'FOOTER', 'MAIN']);
 
-function textNodes(doc) {
+export function textNodes(doc) {
   const walker = doc.createTreeWalker(doc.body, 4 /* NodeFilter.SHOW_TEXT */);
   const list = [];
   let node;
@@ -15,7 +15,7 @@ function textNodes(doc) {
   return list;
 }
 
-function offsetOf(doc, container, offset) {
+export function offsetOf(doc, container, offset) {
   const r = doc.createRange();
   r.setStart(doc.body, 0);
   r.setEnd(container, offset);

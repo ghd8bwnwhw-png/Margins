@@ -2,7 +2,7 @@
 // and works without internet (like downloading a film before a flight).
 // The list below is every file the app needs.
 
-const CACHE = 'margins-readaloud-3';
+const CACHE = 'margins-ink-1';
 const ASSETS = [
   "./",
   "app.css",
@@ -17,6 +17,7 @@ const ASSETS = [
   "js/epubreader.js",
   "js/export.js",
   "js/highlighter.js",
+  "js/ink.js",
   "js/pdfreader.js",
   "js/speech.js",
   "js/sync.js",
