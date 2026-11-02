@@ -25,7 +25,7 @@ export function exportText(book, highlights, { pictures = false } = {}) {
     if (hl.ink && pictures) {
       // The drawing travels as a picture, attached at the end of the note
       n++;
-      lines.push('', '———', locationLabel(hl), `✎ Handwritten note ${n} — see picture ${n} below`);
+      lines.push('', '———', locationLabel(hl), `✎ Handwritten note ${n} — picture ${n} at the end`);
       if (hl.text) lines.push(`Next to: “${hl.text}”`);
     } else if (hl.ink) {
       lines.push('', '———', locationLabel(hl), hl.text ? `✎ Handwritten note next to: “${hl.text}”` : '✎ Handwritten note');
@@ -69,18 +69,15 @@ export async function inkPictures(book, highlights, { pdf = null, blob = null } 
   return files;
 }
 
-/** Text plus pictures to the share sheet (choose "Notes"). */
-export async function shareNote(title, text, files = []) {
-  if (files.length && navigator.canShare?.({ title, text, files })) {
-    try {
-      await navigator.share({ title, text, files });
-      return 'shared';
-    } catch (e) {
-      if (e?.name === 'AbortError') return 'cancelled';
-      if (e?.name === 'NotAllowedError') return 'needs-tap';
-    }
+/** Pictures to the share sheet. */
+export async function shareFiles(title, files) {
+  if (!navigator.canShare?.({ files })) return 'unsupported';
+  try {
+    await navigator.share({ files });
+    return 'shared';
+  } catch (e) {
+    return e?.name === 'AbortError' ? 'cancelled' : 'failed';
   }
-  return shareText(title, text);
 }
 
 export async function copyText(text) {

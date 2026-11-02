@@ -5,7 +5,7 @@ import * as db from './db.js';
 import { h, icon, iconButton, openSheet, toast, confirmDialog, alertSheet, actionSheet } from './ui.js';
 import { openEPUB } from './epub.js';
 import { EPUBReader } from './epubreader.js';
-import { exportText, shareNote, inkPictures, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
+import { exportText, shareText, shareFiles, inkPictures, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
 import { ReadAloud, unlockSpeech, speechSupported, voicesFor, voicesReady, voiceLabel, voiceQuality } from './speech.js';
 import { InkController, inkPreview, PEN_COLORS, PEN_LABELS } from './ink.js';
 import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
@@ -143,44 +143,67 @@ async function deleteBook(book) {
 async function exportBook(book) {
   const list = await db.highlightsFor(book.id);
   if (!list.length) { toast('This book has no highlights yet'); return; }
-  await sendToNotes(book.title, () => notePayload(book, list));
+  await sendToNotes(book.title, exportText(book, list, { pictures: hasInk(list) }), () => notePictures(book, list));
 }
 
-/** The text for Apple Notes plus one picture per handwritten note. */
-async function notePayload(book, list, pdf = null) {
-  let files = [];
-  if (list.some((x) => x.ink)) {
-    const blob = !pdf && book.format === 'pdf' ? (await db.get('files', book.id))?.blob : null;
-    files = await inkPictures(book, list, { pdf, blob }).catch((e) => { console.warn(e); return []; });
-  }
-  return { text: exportText(book, list, { pictures: files.length > 0 }), files };
+const hasInk = (list) => list.some((x) => x.ink && x.strokes?.length);
+
+/** One picture per handwritten note (numbered like the text). */
+async function notePictures(book, list, pdf = null) {
+  if (!hasInk(list)) return [];
+  const blob = !pdf && book.format === 'pdf' ? (await db.get('files', book.id))?.blob : null;
+  return inkPictures(book, list, { pdf, blob }).catch((e) => { console.warn(e); return []; });
 }
 
 /**
- * Opens the share sheet with the note (choose "Notes"). Websites can't
- * write into Apple Notes directly; the share sheet is the only door.
- * Safari opens it only straight after a tap, so if preparing pictures took
- * too long, a "Share to Notes" button asks for one more tap.
+ * Sends the text to Apple Notes through the share sheet (websites can't
+ * write into Notes directly). Notes drops the text when pictures come
+ * along, so the pictures follow as a second step, into the same note.
  */
-async function sendToNotes(title, build) {
-  let payload;
-  let busy = null;
-  const slow = setTimeout(() => { busy = toast('Preparing pictures…', { sticky: true }); }, 250);
-  try { payload = await build(); } finally { clearTimeout(slow); busy?.close(); }
-  const done = (result) => { if (result === 'copied') toast('Copied — paste it into Apple Notes'); };
-  const result = await shareNote(title, payload.text, payload.files);
-  if (result !== 'needs-tap') { done(result); return; }
-  const n = payload.files.length;
+async function sendToNotes(title, text, getPictures) {
+  const pictures = getPictures ? getPictures() : Promise.resolve([]);
+  pictures.catch(() => {});
+  const result = await shareText(title, text);
+  if (result === 'copied') { toast('Copied — paste it into Apple Notes'); return; }
+  if (result === 'needs-tap') {
+    // Safari only opens the share sheet straight after a tap
+    const sheet = openSheet({
+      title: 'Ready for Apple Notes',
+      subtitle: title,
+      body: h('div', { class: 'ready-note' },
+        h('button', { class: 'btn-primary large', onclick: () => { sheet.close(); sendToNotes(title, text, () => pictures); } },
+          icon('share'), h('span', {}, 'Share to Notes')),
+        h('p', { class: 'hint' }, 'In the share sheet, tap Notes.')),
+    });
+    return;
+  }
+  if (result !== 'shared') return;
+  const files = await pictures;
+  if (!files.length) return;
+  offerPictures(title, files);
+}
+
+/** Step 2: the handwritten notes as pictures, added to the note just made. */
+function offerPictures(title, files) {
+  const n = files.length;
   const sheet = openSheet({
-    title: 'Ready for Apple Notes',
+    title: 'Add your handwriting',
     subtitle: title,
+    closeLabel: 'Skip',
     body: h('div', { class: 'ready-note' },
-      h('p', {}, n ? `Your highlights and ${plural(n, 'handwritten note')} (as pictures) are ready.` : 'Your highlights are ready.'),
+      h('p', {}, `Your text is in Notes. Now add ${n === 1 ? 'the handwritten note' : `the ${n} handwritten notes`} as ${n === 1 ? 'a picture' : 'pictures'}.`),
       h('button', {
         class: 'btn-primary large',
-        onclick: async () => { sheet.close(); done(await shareNote(title, payload.text, payload.files)); },
-      }, icon('share'), h('span', {}, 'Share to Notes')),
-      h('p', { class: 'hint' }, 'In the share sheet, tap Notes.')),
+        onclick: async () => {
+          sheet.close();
+          const r = await shareFiles(title, files);
+          if (r === 'unsupported') toast('This device can’t share pictures from here');
+        },
+      }, icon('share'), h('span', {}, n === 1 ? 'Add picture' : `Add ${n} pictures`)),
+      h('ol', { class: 'ready-steps' },
+        h('li', {}, 'Tap Notes in the share sheet.'),
+        h('li', {}, 'At the top of the Notes panel, tap “New Note” and choose the note you just made.'),
+        h('li', {}, 'Tap Save.'))),
   });
 }
 
@@ -846,15 +869,16 @@ function showHighlights(book, list, owner) {
   // Pictures are made ahead of time, so the share sheet opens at once on tap
   let ready = null;
   let prepTimer = null;
+  const pictures = () => ready || notePictures(book, list, owner?.reader?.pdf || null);
   const prepare = () => {
     clearTimeout(prepTimer);
     ready = null;
-    if (!list.some((x) => x.ink)) return;
-    prepTimer = setTimeout(() => { ready = notePayload(book, list, owner?.reader?.pdf || null); ready.catch(() => {}); }, 300);
+    if (!hasInk(list)) return;
+    prepTimer = setTimeout(() => { ready = notePictures(book, list, owner?.reader?.pdf || null); ready.catch(() => {}); }, 300);
   };
   const exportBtn = h('button', {
     class: 'btn-primary small',
-    onclick: () => sendToNotes(book.title, () => ready || notePayload(book, list, owner?.reader?.pdf || null)),
+    onclick: () => sendToNotes(book.title, exportText(book, list, { pictures: hasInk(list) }), pictures),
   }, icon('share'), h('span', {}, 'Export to Notes'));
 
   const render = () => {
@@ -1022,15 +1046,11 @@ async function exportAll() {
   const all = await db.getAll('highlights');
   const withNotes = books.map((book) => [book, all.filter((hl) => hl.bookId === book.id)]).filter(([, list]) => list.length);
   if (!withNotes.length) { toast('No highlights yet'); return; }
-  await sendToNotes('Margins highlights', async () => {
-    const parts = [];
+  const text = withNotes.map(([book, list]) => exportText(book, list, { pictures: hasInk(list) })).join('\n\n\n');
+  await sendToNotes('Margins highlights', text, async () => {
     const files = [];
-    for (const [book, list] of withNotes) {
-      const p = await notePayload(book, list);
-      parts.push(p.text);
-      files.push(...p.files);
-    }
-    return { text: parts.join('\n\n\n'), files };
+    for (const [book, list] of withNotes) files.push(...await notePictures(book, list));
+    return files;
   });
 }
 
