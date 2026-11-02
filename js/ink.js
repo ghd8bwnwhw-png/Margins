@@ -113,6 +113,155 @@ export function inkPreview(group, { maxHeight = 96 } = {}) {
   return el;
 }
 
+// ---- Pictures for Apple Notes ----
+// Notes can't receive a drawing as text, so each handwritten note is
+// turned into a picture: a label, the words it sits next to, and the
+// drawing itself (for PDFs, the piece of the page it was drawn on).
+
+const PAPER = { ink: '#1f1d1a', red: '#d1242f', blue: '#0f62d6', green: '#18794e' };
+const UI_FONT = '-apple-system, "SF Pro Text", system-ui, "Helvetica Neue", Arial, sans-serif';
+const SERIF_FONT = '"New York", ui-serif, "Iowan Old Style", Georgia, serif';
+
+/** Paints a note's strokes onto a canvas: screen = offset + stored × k. */
+export function drawStrokes(ctx, group, { k, ox = 0, oy = 0, minWidth = 2 }) {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const s of group.strokes || []) {
+    ctx.strokeStyle = PAPER[s.c] || PAPER.ink;
+    ctx.lineWidth = Math.max(minWidth, s.w * k);
+    ctx.stroke(new Path2D(pathData(s.p.map(([x, y]) => [ox + x * k, oy + y * k]))));
+  }
+  ctx.restore();
+}
+
+function wrapLines(ctx, text, width, maxLines) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (ctx.measureText(next).width <= width || !line) line = next;
+    else {
+      lines.push(line);
+      line = w;
+      if (lines.length === maxLines) break;
+    }
+  }
+  if (lines.length < maxLines && line) lines.push(line);
+  else if (line && lines.length === maxLines) {
+    let last = lines[maxLines - 1];
+    while (last && ctx.measureText(`${last}…`).width > width) last = last.slice(0, -1);
+    lines[maxLines - 1] = `${last.trim()}…`;
+  }
+  return lines;
+}
+
+function fitText(ctx, text, width) {
+  if (ctx.measureText(text).width <= width) return text;
+  let t = text;
+  while (t && ctx.measureText(`${t}…`).width > width) t = t.slice(0, -1);
+  return `${t.trim()}…`;
+}
+
+/**
+ * One picture (PNG) for a handwritten note.
+ * picture: an optional canvas showing the page with the drawing on it (PDFs).
+ */
+export async function inkCard(group, { number, location, bookTitle, picture = null }) {
+  const W = 1200;
+  const pad = 56;
+  const inner = W - pad * 2;
+  const measure = document.createElement('canvas').getContext('2d');
+
+  // Text part
+  measure.font = `600 26px ${UI_FONT}`;
+  const head1 = bookTitle ? fitText(measure, bookTitle, inner) : '';
+  measure.font = `700 32px ${UI_FONT}`;
+  const head2 = fitText(measure, `✎ Handwritten note ${number}${location ? ` · ${location}` : ''}`, inner);
+  // A circle around words (EPUB): the words go inside the circle, as on the page
+  const focus = inkFocus(group);
+  const inCircle = !picture && focus.circled && group.text;
+  measure.font = `34px ${SERIF_FONT}`;
+  const quote = !picture && group.text && !inCircle ? wrapLines(measure, `“${group.text}”`, inner, 5) : [];
+
+  // Drawing part
+  let art;
+  if (picture) {
+    const k = Math.min(1, inner / picture.width, 1400 / picture.height);
+    art = { w: picture.width * k, h: picture.height * k, k };
+  } else {
+    const strokes = group.strokes || [];
+    const b = inkBounds(group);
+    const bw = Math.max(b.x2 - b.x1, 1e-6);
+    const bh = Math.max(b.y2 - b.y1, 1e-6);
+    const avgW = strokes.reduce((a, st) => a + st.w, 0) / Math.max(strokes.length, 1) || 1;
+    let k = Math.min((WIDTH * 2) / avgW, inner / bw, 1000 / bh);
+    // Make sure a circle is roomy enough to hold its words
+    if (inCircle) k = Math.min(Math.max(k, 140 / Math.max(focus.box.y2 - focus.box.y1, 1e-6)), inner / bw);
+    art = { w: bw * k, h: bh * k, k, b };
+  }
+
+  let y = pad;
+  const layout = [];
+  if (head1) { layout.push(['h1', y]); y += 36; }
+  layout.push(['h2', y]); y += 52;
+  for (let i = 0; i < quote.length; i++) { layout.push(['q', y, quote[i]]); y += 48; }
+  if (quote.length) y += 20;
+  const artTop = y + 10;
+  const H = Math.ceil(artTop + art.h + 10 + pad);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = 'top';
+  for (const [kind, top, line] of layout) {
+    if (kind === 'h1') { ctx.font = `600 26px ${UI_FONT}`; ctx.fillStyle = '#6f695f'; ctx.fillText(head1, pad, top); }
+    if (kind === 'h2') { ctx.font = `700 32px ${UI_FONT}`; ctx.fillStyle = '#2f5d50'; ctx.fillText(head2, pad, top); }
+    if (kind === 'q') { ctx.font = `34px ${SERIF_FONT}`; ctx.fillStyle = '#1f1d1a'; ctx.fillText(line, pad, top); }
+  }
+  const left = pad + (inner - art.w) / 2;
+  if (picture) {
+    ctx.drawImage(picture, left, artTop, art.w, art.h);
+    ctx.strokeStyle = '#e0d9cb';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(left, artTop, art.w, art.h);
+  } else {
+    const ox = left - art.b.x1 * art.k;
+    const oy = artTop - art.b.y1 * art.k;
+    if (inCircle) {
+      const f = focus.box;
+      const bx = ox + f.x1 * art.k;
+      const by = oy + f.y1 * art.k;
+      const bw = (f.x2 - f.x1) * art.k;
+      const bh = (f.y2 - f.y1) * art.k;
+      // Inside an ellipse the usable box is about 70% of its width and height
+      const tw = bw * 0.78;
+      const th = bh * 0.72;
+      let size = 34;
+      let lines = [];
+      for (; size >= 16; size -= 2) {
+        ctx.font = `${size}px ${SERIF_FONT}`;
+        lines = wrapLines(ctx, group.text, tw, Math.max(1, Math.floor(th / (size * 1.3))));
+        if (lines.join(' ').length >= group.text.length - 1 || size === 16) break;
+      }
+      ctx.fillStyle = '#1f1d1a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const lh = size * 1.3;
+      const top = by + bh / 2 - ((lines.length - 1) * lh) / 2;
+      lines.forEach((line, i) => ctx.fillText(line, bx + bw / 2, top + i * lh));
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+    }
+    drawStrokes(ctx, group, { k: art.k, ox, oy, minWidth: 3 });
+  }
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Picture failed'))), 'image/png'));
+}
+
 export class InkController {
   constructor({ reader, scroller, groups, bookId, onSave, onDelete }) {
     this.reader = reader;

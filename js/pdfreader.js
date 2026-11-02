@@ -7,7 +7,7 @@
 import { splitSentences } from './speech.js';
 import * as pdfjsLib from '../vendor/pdfjs/pdf.mjs';
 import { h } from './ui.js';
-import { inkSurface, inkBounds, inkFocus } from './ink.js';
+import { inkSurface, inkBounds, inkFocus, drawStrokes } from './ink.js';
 
 const BASE = new URL('../vendor/pdfjs/', import.meta.url).href;
 pdfjsLib.GlobalWorkerOptions.workerSrc = BASE + 'pdf.worker.mjs';
@@ -82,6 +82,33 @@ function mergeRects(rects) {
   }
   const round = (v) => Math.round(v * 100000) / 100000;
   return out.map((r) => ({ p: r.p, x: round(r.x), y: round(r.y), w: round(r.w), h: round(r.h) }));
+}
+
+/** The piece of the page around a handwritten note, with the drawing on it. */
+export async function inkPageCrop(pdf, g, { width = 1100 } = {}) {
+  const page = await pdf.getPage(g.page + 1);
+  const viewport = page.getViewport({ scale: width / page.getViewport({ scale: 1 }).width });
+  const full = document.createElement('canvas');
+  full.width = Math.round(viewport.width);
+  full.height = Math.round(viewport.height);
+  const fctx = full.getContext('2d');
+  fctx.fillStyle = '#fff';
+  fctx.fillRect(0, 0, full.width, full.height);
+  await page.render({ canvasContext: fctx, viewport }).promise;
+  const b = inkBounds(g);
+  const m = 70;
+  const x1 = Math.max(0, Math.floor(b.x1 * width - m * 2));
+  const x2 = Math.min(full.width, Math.ceil(b.x2 * width + m * 2));
+  const y1 = Math.max(0, Math.floor(b.y1 * width - m));
+  const y2 = Math.min(full.height, Math.ceil(b.y2 * width + m));
+  const crop = document.createElement('canvas');
+  crop.width = Math.max(1, x2 - x1);
+  crop.height = Math.max(1, y2 - y1);
+  const ctx = crop.getContext('2d');
+  ctx.drawImage(full, x1, y1, crop.width, crop.height, 0, 0, crop.width, crop.height);
+  drawStrokes(ctx, g, { k: width, ox: -x1, oy: -y1, minWidth: 2 });
+  full.width = full.height = 0;
+  return crop;
 }
 
 export class PDFReader {

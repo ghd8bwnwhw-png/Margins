@@ -15,14 +15,19 @@ export function sortHighlights(list) {
 }
 
 /** The first line (book title) becomes the note's title in Apple Notes. */
-export function exportText(book, highlights) {
+export function exportText(book, highlights, { pictures = false } = {}) {
   const date = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   const lines = [book.title];
   if (book.author) lines.push(`by ${book.author}`);
   lines.push(`Highlights & notes · exported ${date}`);
+  let n = 0;
   for (const hl of sortHighlights(highlights)) {
-    if (hl.ink) {
-      // A drawing can't travel as text: say where it is and what it's next to
+    if (hl.ink && pictures) {
+      // The drawing travels as a picture, attached at the end of the note
+      n++;
+      lines.push('', '———', locationLabel(hl), `✎ Handwritten note ${n} — see picture ${n} below`);
+      if (hl.text) lines.push(`Next to: “${hl.text}”`);
+    } else if (hl.ink) {
       lines.push('', '———', locationLabel(hl), hl.text ? `✎ Handwritten note next to: “${hl.text}”` : '✎ Handwritten note');
     } else {
       lines.push('', '———', locationLabel(hl), `“${hl.text}”`);
@@ -31,6 +36,51 @@ export function exportText(book, highlights) {
     if (note) lines.push(`Note: ${note}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * One picture per handwritten note, numbered like the text.
+ * For PDFs pass the open document (pdf) or the book's file (blob).
+ */
+export async function inkPictures(book, highlights, { pdf = null, blob = null } = {}) {
+  const inks = sortHighlights(highlights).filter((x) => x.ink && x.strokes?.length);
+  if (!inks.length) return [];
+  const { inkCard } = await import('./ink.js');
+  let doc = pdf;
+  let opened = null;
+  if (book.format === 'pdf' && !doc && blob) {
+    const { loadPDF } = await import('./pdfreader.js');
+    doc = opened = await loadPDF(blob).catch(() => null);
+  }
+  const crop = doc ? (await import('./pdfreader.js')).inkPageCrop : null;
+  const safe = (book.title || 'Margins').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60).trim();
+  const files = [];
+  try {
+    let n = 0;
+    for (const g of inks) {
+      n++;
+      const picture = crop && g.kind === 'pdf' ? await crop(doc, g).catch(() => null) : null;
+      const png = await inkCard(g, { number: n, location: locationLabel(g), bookTitle: book.title, picture });
+      files.push(new File([png], `${safe} – handwritten note ${n}.png`, { type: 'image/png' }));
+    }
+  } finally {
+    opened?.destroy();
+  }
+  return files;
+}
+
+/** Text plus pictures to the share sheet (choose "Notes"). */
+export async function shareNote(title, text, files = []) {
+  if (files.length && navigator.canShare?.({ title, text, files })) {
+    try {
+      await navigator.share({ title, text, files });
+      return 'shared';
+    } catch (e) {
+      if (e?.name === 'AbortError') return 'cancelled';
+      if (e?.name === 'NotAllowedError') return 'needs-tap';
+    }
+  }
+  return shareText(title, text);
 }
 
 export async function copyText(text) {
@@ -59,6 +109,8 @@ export async function shareText(title, text) {
       return 'shared';
     } catch (e) {
       if (e?.name === 'AbortError') return 'cancelled';
+      // Safari opens the share sheet only right after a tap
+      if (e?.name === 'NotAllowedError') return 'needs-tap';
     }
   }
   await copyText(text);

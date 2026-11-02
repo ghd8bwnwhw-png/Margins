@@ -5,12 +5,12 @@ import * as db from './db.js';
 import { h, icon, iconButton, openSheet, toast, confirmDialog, alertSheet, actionSheet } from './ui.js';
 import { openEPUB } from './epub.js';
 import { EPUBReader } from './epubreader.js';
-import { exportText, shareText, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
+import { exportText, shareNote, inkPictures, copyText, sortHighlights, locationLabel, saveFile, makeBackupFile } from './export.js';
 import { ReadAloud, unlockSpeech, speechSupported, voicesFor, voicesReady, voiceLabel, voiceQuality } from './speech.js';
 import { InkController, inkPreview, PEN_COLORS, PEN_LABELS } from './ink.js';
 import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 const COLORS = ['yellow', 'green', 'blue', 'pink'];
 
 const app = document.getElementById('app');
@@ -143,8 +143,45 @@ async function deleteBook(book) {
 async function exportBook(book) {
   const list = await db.highlightsFor(book.id);
   if (!list.length) { toast('This book has no highlights yet'); return; }
-  const result = await shareText(book.title, exportText(book, list));
-  if (result === 'copied') toast('Copied — paste it into Apple Notes');
+  await sendToNotes(book.title, () => notePayload(book, list));
+}
+
+/** The text for Apple Notes plus one picture per handwritten note. */
+async function notePayload(book, list, pdf = null) {
+  let files = [];
+  if (list.some((x) => x.ink)) {
+    const blob = !pdf && book.format === 'pdf' ? (await db.get('files', book.id))?.blob : null;
+    files = await inkPictures(book, list, { pdf, blob }).catch((e) => { console.warn(e); return []; });
+  }
+  return { text: exportText(book, list, { pictures: files.length > 0 }), files };
+}
+
+/**
+ * Opens the share sheet with the note (choose "Notes"). Websites can't
+ * write into Apple Notes directly; the share sheet is the only door.
+ * Safari opens it only straight after a tap, so if preparing pictures took
+ * too long, a "Share to Notes" button asks for one more tap.
+ */
+async function sendToNotes(title, build) {
+  let payload;
+  let busy = null;
+  const slow = setTimeout(() => { busy = toast('Preparing pictures…', { sticky: true }); }, 250);
+  try { payload = await build(); } finally { clearTimeout(slow); busy?.close(); }
+  const done = (result) => { if (result === 'copied') toast('Copied — paste it into Apple Notes'); };
+  const result = await shareNote(title, payload.text, payload.files);
+  if (result !== 'needs-tap') { done(result); return; }
+  const n = payload.files.length;
+  const sheet = openSheet({
+    title: 'Ready for Apple Notes',
+    subtitle: title,
+    body: h('div', { class: 'ready-note' },
+      h('p', {}, n ? `Your highlights and ${plural(n, 'handwritten note')} (as pictures) are ready.` : 'Your highlights are ready.'),
+      h('button', {
+        class: 'btn-primary large',
+        onclick: async () => { sheet.close(); done(await shareNote(title, payload.text, payload.files)); },
+      }, icon('share'), h('span', {}, 'Share to Notes')),
+      h('p', { class: 'hint' }, 'In the share sheet, tap Notes.')),
+  });
 }
 
 // ======================================================================
@@ -806,15 +843,22 @@ function showHighlights(book, list, owner) {
     class: 'btn-secondary small',
     onclick: async () => { await copyText(exportText(book, list)); toast('Copied to clipboard'); },
   }, icon('copy'), h('span', {}, 'Copy'));
+  // Pictures are made ahead of time, so the share sheet opens at once on tap
+  let ready = null;
+  let prepTimer = null;
+  const prepare = () => {
+    clearTimeout(prepTimer);
+    ready = null;
+    if (!list.some((x) => x.ink)) return;
+    prepTimer = setTimeout(() => { ready = notePayload(book, list, owner?.reader?.pdf || null); ready.catch(() => {}); }, 300);
+  };
   const exportBtn = h('button', {
     class: 'btn-primary small',
-    onclick: async () => {
-      const result = await shareText(book.title, exportText(book, list));
-      if (result === 'copied') toast('Copied — paste it into Apple Notes');
-    },
+    onclick: () => sendToNotes(book.title, () => ready || notePayload(book, list, owner?.reader?.pdf || null)),
   }, icon('share'), h('span', {}, 'Export to Notes'));
 
   const render = () => {
+    prepare();
     const items = sortHighlights(list);
     const inks = items.filter((x) => x.ink).length;
     count.textContent = [items.length - inks ? plural(items.length - inks, 'highlight') : '', inks ? plural(inks, 'handwritten note') : ''].filter(Boolean).join(' · ');
@@ -976,14 +1020,18 @@ async function showSettings() {
 async function exportAll() {
   const books = await db.getAll('books');
   const all = await db.getAll('highlights');
-  const parts = [];
-  for (const book of books) {
-    const list = all.filter((hl) => hl.bookId === book.id);
-    if (list.length) parts.push(exportText(book, list));
-  }
-  if (!parts.length) { toast('No highlights yet'); return; }
-  const result = await shareText('Margins highlights', parts.join('\n\n\n'));
-  if (result === 'copied') toast('Copied — paste it into Apple Notes');
+  const withNotes = books.map((book) => [book, all.filter((hl) => hl.bookId === book.id)]).filter(([, list]) => list.length);
+  if (!withNotes.length) { toast('No highlights yet'); return; }
+  await sendToNotes('Margins highlights', async () => {
+    const parts = [];
+    const files = [];
+    for (const [book, list] of withNotes) {
+      const p = await notePayload(book, list);
+      parts.push(p.text);
+      files.push(...p.files);
+    }
+    return { text: parts.join('\n\n\n'), files };
+  });
 }
 
 async function backup() {

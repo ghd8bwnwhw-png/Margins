@@ -489,6 +489,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .ink-near span { font-family: var(--serif); color: var(--ink); }
 .editor .btn-secondary { align-self: flex-start; }
 
+.ready-note { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; padding: 8px 0 12px; }
+.ready-note p { margin: 0; line-height: 1.45; }
+
 /* Read-aloud player */
 .ra-bar {
   display: flex;
