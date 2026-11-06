@@ -30,17 +30,30 @@ const BASE_CSS = `
   ::selection { background: rgba(47, 93, 80, 0.28); }
   ::highlight(read-aloud) { background-color: rgba(47, 93, 80, 0.16); }
   .read-aloud-block { background-color: rgba(47, 93, 80, 0.08) !important; border-radius: 4px; }
-  @media (prefers-color-scheme: dark) {
-    html, body { color: #ece7dd !important; }
-    body * { color: inherit !important; background-color: transparent; border-color: #3a3733; }
-    a { color: #86c2ad !important; }
-    img { opacity: 0.92; }
-    mark.rh-yellow { background-color: rgba(255, 204, 0, 0.32) !important; }
-    ::highlight(read-aloud) { background-color: rgba(134, 194, 173, 0.24); }
-    .read-aloud-block { background-color: rgba(134, 194, 173, 0.1) !important; }
-    ::selection { background: rgba(134, 194, 173, 0.35); }
-  }
 `;
+
+// Night colours for the book page. Books often paint their own white
+// boxes; all of them are cleared, so light text never sits on white.
+const DARK_CSS = `
+  html { color-scheme: dark; }
+  html, body { color: #ece7dd !important; background: transparent !important; }
+  html body *:not(#_m1):not(#_m2):not(img):not(svg):not(video):not(mark) { color: inherit !important; background-color: transparent !important;
+    background-image: none !important; border-color: #3a3733 !important; }
+  html body a:not(#_m1):not(#_m2), html body a:not(#_m1):not(#_m2) * { color: #86c2ad !important; }
+  img { opacity: 0.92; }
+  mark.rh-yellow { background-color: rgba(255, 204, 0, 0.32) !important; }
+  ::highlight(read-aloud) { background-color: rgba(134, 194, 173, 0.24); }
+  .read-aloud-block { background-color: rgba(134, 194, 173, 0.1) !important; }
+  ::selection { background: rgba(134, 194, 173, 0.35); }
+`;
+const LIGHT_CSS = 'html { color-scheme: light; }';
+
+/** Which look the app uses now: 'light' or 'dark'. */
+export function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t === 'light' || t === 'dark') return t;
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
 const FAMILIES = {
   original: '',
@@ -143,6 +156,9 @@ export class EPUBReader {
     head.appendChild(base);
     this.typoStyle = doc.createElementNS(XHTML_NS, 'style');
     head.appendChild(this.typoStyle);
+    this.themeStyle = doc.createElementNS(XHTML_NS, 'style');
+    head.appendChild(this.themeStyle);
+    this.applyTheme();
     this.applyTypography();
 
     doc.addEventListener('selectionchange', () => this.onSelectionChange());
@@ -176,6 +192,13 @@ export class EPUBReader {
     this.typoStyle.textContent =
       `html body { font-size: ${size}% !important; }` +
       (font ? ` html body, html body *:not(code):not(pre):not(kbd):not(samp) { font-family: ${font} !important; }` : '');
+  }
+
+  applyTheme() {
+    if (!this.themeStyle) return;
+    const dark = currentTheme() === 'dark';
+    this.themeStyle.textContent = dark ? DARK_CSS : LIGHT_CSS;
+    this.frame.style.colorScheme = dark ? 'dark' : 'light';
   }
 
   setTypography(typography) {

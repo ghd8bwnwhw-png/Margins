@@ -1,4 +1,4 @@
-/* Margins — calm, paper-like reading app. Light & dark follow the system. */
+/* Margins — calm, paper-like reading app. Light, dark, or following the system. */
 
 :root {
   --bg: #f4f1ea;
@@ -41,8 +41,10 @@
   color-scheme: light dark;
 }
 
+/* Appearance: Automatic follows the iPad; Light and Dark are fixed (see app.js) */
+:root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #141312;
     --surface: #1c1b19;
     --surface-2: #2a2825;
@@ -61,6 +63,26 @@
     --pen-blue: #79b8ff;
     --pen-green: #7ee2a8;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141312;
+  --surface: #1c1b19;
+  --surface-2: #2a2825;
+  --ink: #ece7dd;
+  --muted: #9b9488;
+  --line: #322f2b;
+  --accent: #86c2ad;
+  --accent-soft: rgba(134, 194, 173, 0.14);
+  --on-accent: #10241d;
+  --danger: #ff7a70;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --hl-yellow: rgba(255, 204, 0, 0.32);
+  --pen-ink: #ece7dd;
+  --pen-red: #ff7b72;
+  --pen-blue: #79b8ff;
+  --pen-green: #7ee2a8;
 }
 
 * { box-sizing: border-box; }
@@ -357,7 +379,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
 }
-.epub-frame { display: block; width: 100%; height: 120px; border: 0; background: transparent; color-scheme: light dark; }
+.epub-frame { display: block; width: 100%; height: 120px; border: 0; background: transparent; }
 
 .chapter-end { display: flex; justify-content: center; padding: 8px 20px 48px; }
 .next-chapter {

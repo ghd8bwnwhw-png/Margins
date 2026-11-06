@@ -10,7 +10,7 @@ import { ReadAloud, unlockSpeech, speechSupported, voicesFor, voicesReady, voice
 import { InkController, inkPreview, PEN_COLORS, PEN_LABELS } from './ink.js';
 import { syncIn, syncOutFile, applyWaiting, recordDeletion, lastSyncTime } from './sync.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 const COLORS = ['yellow', 'green', 'blue', 'pink'];
 
 const app = document.getElementById('app');
@@ -29,6 +29,34 @@ const prefs = {
     try { localStorage.setItem(`margins.${key}`, JSON.stringify(value)); } catch { /* private mode */ }
   },
 };
+
+// ---- Appearance: Light, Dark, or Automatic (follows the iPad) ----
+
+function applyAppearance() {
+  const mode = prefs.get('appearance', 'auto');
+  const root = document.documentElement;
+  if (mode === 'light' || mode === 'dark') root.dataset.theme = mode; else delete root.dataset.theme;
+  const dark = mode === 'dark' || (mode === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) m.setAttribute('content', dark ? '#141312' : '#f4f1ea');
+  session?.reader?.applyTheme?.();
+  session?.ink?.renderAll?.();
+}
+
+function appearancePicker() {
+  const now = prefs.get('appearance', 'auto');
+  const group = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Appearance' },
+    [['light', 'Light'], ['dark', 'Dark'], ['auto', 'Automatic']].map(([key, label]) => h('button', {
+      role: 'radio',
+      class: 'seg',
+      'aria-checked': String(now === key),
+      onclick: (e) => {
+        prefs.set('appearance', key);
+        group.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b === e.currentTarget)));
+        applyAppearance();
+      },
+    }, label)));
+  return group;
+}
 
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -592,7 +620,10 @@ class ReaderSession {
           value,
           h('button', { class: 'size-btn', 'aria-label': 'Larger text', onclick: () => { size = Math.min(200, size + 10); apply(); } }, h('span', { class: 'a-large' }, 'A'))),
         h('div', { class: 'field-label' }, 'Typeface'),
-        families),
+        families,
+        h('div', { class: 'field-label' }, 'Appearance'),
+        appearancePicker(),
+        h('p', { class: 'hint' }, 'Automatic follows your iPad’s Dark Mode.')),
     });
   }
 
@@ -1030,6 +1061,10 @@ async function showSettings() {
           h('button', { class: 'action-item', onclick: () => { sheet.close(); backupInput.click(); } }, icon('upload'), h('span', {}, 'Restore from a backup'))),
         h('p', { class: 'hint' }, 'Your books and highlights live only on this device. Sync keeps your devices in step through one file in iCloud Drive; a backup is a dated copy you keep for safety.')),
       h('section', {},
+        h('h3', {}, 'Appearance'),
+        appearancePicker(),
+        h('p', { class: 'hint' }, 'Light keeps pages light even when your iPad is in Dark Mode. Automatic follows the iPad.')),
+      h('section', {},
         h('h3', {}, 'Offline & storage'),
         h('p', {}, isStandalone()
           ? 'Installed on your Home Screen — Margins works without internet.'
@@ -1126,6 +1161,9 @@ if ('serviceWorker' in navigator) {
     })
     .catch((e) => console.warn('Offline support unavailable', e));
 }
+
+applyAppearance();
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyAppearance);
 
 history.replaceState(null, '');
 refreshLibrary();
